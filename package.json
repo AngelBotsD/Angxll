@@ -12,9 +12,7 @@
   },
   "author": "Russell",
   "license": "ISC",
-  "engines": {
-    "node": ">=18.17"
-  },
+  "engines": { "node": ">=18.17" },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.21",
     "awesome-phonenumber": "^5.10.0",
@@ -30,7 +28,6 @@
     "formdata-node": "^6.0.3",
     "hispamemes": "^1.0.7",
     "canvas": "^3.0.0-rc2",
-    "jimp": "^0.16.13",
     "child_process": "^1.0.2",
     "form-data-encoder": "^4.0.2",
     "figlet": "^1.8.0",
