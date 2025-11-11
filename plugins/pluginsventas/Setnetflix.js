@@ -1,6 +1,5 @@
 const fs = require("fs");
 const path = require("path");
-const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 
 // ——— Helpers LID-aware ———
 const DIGITS = (s = "") => String(s).replace(/\D/g, "");
@@ -60,7 +59,7 @@ function getQuotedText(msg) {
   );
 }
 
-const handler = async (msg, { conn, args, text }) => {
+const handler = async (msg, { conn, args, text, wa }) => {
   const chatId    = msg.key.remoteJid;
   const isGroup   = chatId.endsWith("@g.us");
   const senderJid = msg.key.participant || msg.key.remoteJid; // puede ser @lid
@@ -103,7 +102,7 @@ const handler = async (msg, { conn, args, text }) => {
   let imagenBase64 = null;
   if (quotedImage) {
     try {
-      const stream = await downloadContentFromMessage(quotedImage, "image");
+      const stream = await wa.downloadContentFromMessage(quotedImage, "image");
       let buffer = Buffer.alloc(0);
       for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
       imagenBase64 = buffer.toString("base64");
