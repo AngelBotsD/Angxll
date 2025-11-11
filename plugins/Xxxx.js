@@ -1,12 +1,13 @@
-// plugins/xxx2.js
-const Checker = require("../libs/nsfw");
-const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
-const ffmpeg = require("fluent-ffmpeg");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+// plugins/xxx2.js — ESM-safe NSFW checker
+"use strict";
 
-// ——— helpers ———
+const Checker = require("../libs/nsfw");
+const ffmpeg  = require("fluent-ffmpeg");
+const fs      = require("fs");
+const os      = require("os");
+const path    = require("path");
+
+// —— helpers ——
 function unwrapMessage(m) {
   let n = m;
   while (
@@ -23,6 +24,7 @@ function unwrapMessage(m) {
   }
   return n;
 }
+
 function getQuotedMessage(msg) {
   const root = unwrapMessage(msg?.message) || {};
   const ctxs = [
@@ -36,23 +38,33 @@ function getQuotedMessage(msg) {
   for (const c of ctxs) if (c?.quotedMessage) return unwrapMessage(c.quotedMessage);
   return null;
 }
+
+async function getDownloader(wa) {
+  if (wa && typeof wa.downloadContentFromMessage === "function") return wa.downloadContentFromMessage;
+  const m = await import("@whiskeysockets/baileys");
+  return m.downloadContentFromMessage;
+}
+
 async function downloadToBuffer(DL, type, content) {
   const stream = await DL(content, type);
   let buf = Buffer.alloc(0);
   for await (const chunk of stream) buf = Buffer.concat([buf, chunk]);
   return buf;
 }
-function safeUnlink(p) {
-  try { if (p && fs.existsSync(p)) fs.unlinkSync(p); } catch {}
-}
 
+function safeUnlink(p) { try { if (p && fs.existsSync(p)) fs.unlinkSync(p); } catch {} }
+
+// —— handler ——
 const handler = async (msg, { conn, wa }) => {
   const chatId = msg.key.remoteJid;
 
-  // Preferir wa.downloadContentFromMessage si el dispatcher lo expone
-  const DL = (wa && typeof wa.downloadContentFromMessage === "function")
-    ? wa.downloadContentFromMessage
-    : downloadContentFromMessage;
+  // downloader ESM-safe
+  let DL;
+  try { DL = await getDownloader(wa); }
+  catch (e) {
+    await conn.sendMessage(chatId, { text: "❌ No se pudo cargar el downloader de Baileys." }, { quoted: msg });
+    return;
+  }
 
   try { await conn.sendMessage(chatId, { react: { text: "🔍", key: msg.key } }); } catch {}
 
@@ -66,17 +78,16 @@ const handler = async (msg, { conn, wa }) => {
   }
 
   let buffer = null, mimeType = "image/png";
-  const tmpId = (msg.key.id || String(Date.now())).replace(/[^a-zA-Z0-9]/g, "");
-  const inPath  = path.join(os.tmpdir(), `${tmpId}.mp4`);
-  const outPath = path.join(os.tmpdir(), `${tmpId}.webp`);
+  const tmpId  = (msg.key.id || String(Date.now())).replace(/[^a-zA-Z0-9]/g, "");
+  const inPath = path.join(os.tmpdir(), `${tmpId}.mp4`);
+  const outPath= path.join(os.tmpdir(), `${tmpId}.webp`);
 
   try {
     if (quoted.videoMessage) {
-      // 1) Descargar video
+      // Descargar video y extraer 1 frame → webp 512x512
       const vbuf = await downloadToBuffer(DL, "video", quoted.videoMessage);
       await fs.promises.writeFile(inPath, vbuf);
 
-      // 2) Extraer 1 frame y convertir a webp 512x512 padded
       await new Promise((resolve, reject) => {
         ffmpeg(inPath)
           .outputOptions([
@@ -107,13 +118,14 @@ const handler = async (msg, { conn, wa }) => {
       );
     }
 
-    // ——— Análisis NSFW ———
+    // Analizar con Checker NSFW
     const checker = new Checker();
-    const result = await checker.response(buffer, mimeType);
+    const result  = await checker.response(buffer, mimeType);
     if (!result?.status) throw new Error(result?.msg || "Error desconocido del analizador.");
 
     const { NSFW, percentage, response } = result.result || {};
     const estado = NSFW ? "🔞 *NSFW detectado*" : "✅ *Contenido seguro*";
+
     await conn.sendMessage(
       chatId,
       { text: `${estado}\n📊 *Confianza:* ${percentage}\n\n${response || ""}`.trim() },
@@ -123,7 +135,7 @@ const handler = async (msg, { conn, wa }) => {
     try { await conn.sendMessage(chatId, { react: { text: "✅", key: msg.key } }); } catch {}
 
   } catch (err) {
-    console.error("[xxx] NSFW error:", err?.message || err);
+    console.error("[xxx2] NSFW error:", err?.message || err);
     await conn.sendMessage(
       chatId,
       { text: `❌ *Error al analizar el archivo:* ${err?.message || "Fallo desconocido."}` },
@@ -136,9 +148,9 @@ const handler = async (msg, { conn, wa }) => {
   }
 };
 
-handler.command = ["xxx"];
-handler.tags = ["tools"];
-handler.help = ["xxx <responde a un video, imagen o sticker>"];
+handler.command  = ["xxx"];
+handler.tags     = ["tools"];
+handler.help     = ["xxx <responde a un video, imagen o sticker>"];
 handler.register = true;
 
 module.exports = handler;
