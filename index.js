@@ -40,7 +40,8 @@ let canalNombre = ["👑 LA SUKI BOT 👑"]
   }
 
 
-// ❌ QUITADO: const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } = require("@whiskeysockets/baileys");
+
+// (sin los require de Baileys aquí)
 const { readdirSync } = require("fs");
 const fs = require("fs");
 const path = require("path");
@@ -50,7 +51,6 @@ const readline = require("readline");
 const pino = require("pino");
 const { setConfig, getConfig } = require("./db");
 // 🌐 Prefijos personalizados desde prefijos.json o por defecto
-// ❌ QUITADO: const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 let defaultPrefixes = [".", "#"];
 const prefixPath = "./prefijos.json";
 global.requireFromRoot = (mod) => require(path.join(__dirname, mod));
@@ -116,14 +116,24 @@ let method = "1";
 let phoneNumber = "";
 
 (async () => {
-  // ✅ NUEVO: importar Baileys (ESM) dinámicamente desde CJS
+  // ✅ Import dinámico compatible con CJS (6.x) y ESM (futuro 7.x)
+  const mod = await import('@whiskeysockets/baileys');
+  // Si es CJS, `mod.default` es el objeto de exports; si es ESM, usamos `mod` directo
+  const B = mod.default && Object.keys(mod).length === 1 ? mod.default : mod;
+
   const {
     default: makeWASocket,
     useMultiFileAuthState,
     makeCacheableSignalKeyStore,
-    fetchLatestWaWebVersion,      // ← reemplaza a fetchLatestBaileysVersion
-    downloadContentFromMessage    // ← lo usas más abajo (antidelete, etc.)
-  } = await import('@whiskeysockets/baileys');
+    fetchLatestWaWebVersion,    // puede existir solo en versiones nuevas
+    fetchLatestBaileysVersion,  // existe en 6.x
+    downloadContentFromMessage
+  } = B;
+
+  // Función de versión compatible (usa la nueva si existe; si no, la vieja)
+  const getWaVersion = typeof fetchLatestWaWebVersion === "function"
+    ? fetchLatestWaWebVersion
+    : fetchLatestBaileysVersion;
 
   const { state, saveCreds } = await useMultiFileAuthState("./sessions");
 
@@ -139,8 +149,8 @@ let phoneNumber = "";
 
   async function startBot() {
     try {
-      // ✅ CAMBIO: usar fetchLatestWaWebVersion()
-      const { version } = await fetchLatestWaWebVersion();
+      // ✅ usa la función de versión disponible en tu Baileys
+      const { version } = await getWaVersion();
 
       const sock = makeWASocket({ 
         version,
@@ -153,26 +163,27 @@ let phoneNumber = "";
         printQRInTerminal: method === "1",
       });
       setupConnection(sock)
+
       // 🔧 Normaliza participants: si id es @lid y existe .jid (real), reemplaza por el real
       sock.lidParser = function (participants = []) {
         try {
           return participants.map(v => ({
             ...v,
             id: (typeof v?.id === "string" && v.id.endsWith("@lid") && v.jid)
-              ? v.jid  // usa el real si lo trae
-              : v.id   // deja tal cual
+              ? v.jid
+              : v.id
           }));
         } catch (e) {
           console.error("[lidParser] error:", e);
           return participants || [];
         }
-      };      
+      };
 
       // 🧠 Ejecutar plugins con eventos especiales como bienvenida
       for (const plugin of global.plugins) {
         if (typeof plugin.run === "function") {
           try {
-            plugin.run(sock); // ahora sí existe sock
+            plugin.run(sock);
             console.log(chalk.magenta("🧠 Plugin con eventos conectado"));
           } catch (e) {
             console.error(chalk.red("❌ Error al ejecutar evento del plugin:"), e);
@@ -186,6 +197,9 @@ let phoneNumber = "";
           console.log(chalk.magenta("🔑 Código de vinculación: ") + chalk.yellow(code.match(/.{1,4}/g).join("-")));
         }, 2000);
       }
+
+
+
       
       // 💬 Manejo de mensajes
 sock.ev.on("messages.upsert", async ({ messages }) => {
