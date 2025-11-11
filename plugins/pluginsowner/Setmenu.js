@@ -1,7 +1,6 @@
 // plugins/setmenu.js
 const fs = require("fs");
 const path = require("path");
-const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 
 /** Extrae texto del mensaje citado (conserva saltos y espacios) */
 function getQuotedText(msg) {
@@ -20,14 +19,40 @@ function getQuotedText(msg) {
   );
 }
 
-const handler = async (msg, { conn, args, text }) => {
+/** Desencapsula viewOnce/ephemeral para acceder al mensaje real */
+function unwrapMessage(m) {
+  let node = m;
+  while (
+    node?.viewOnceMessage?.message ||
+    node?.viewOnceMessageV2?.message ||
+    node?.viewOnceMessageV2Extension?.message ||
+    node?.ephemeralMessage?.message
+  ) {
+    node =
+      node.viewOnceMessage?.message ||
+      node.viewOnceMessageV2?.message ||
+      node.viewOnceMessageV2Extension?.message ||
+      node.ephemeralMessage?.message;
+  }
+  return node;
+}
+
+/** Asegura acceso a wa.downloadContentFromMessage */
+function ensureWA(wa, conn) {
+  if (wa && typeof wa.downloadContentFromMessage === "function") return wa;
+  if (conn && conn.wa && typeof conn.wa.downloadContentFromMessage === "function") return conn.wa;
+  if (global.wa && typeof global.wa.downloadContentFromMessage === "function") return global.wa;
+  return null;
+}
+
+const handler = async (msg, { conn, args, text, wa }) => {
   const chatId   = msg.key.remoteJid;
   const senderId = msg.key.participant || msg.key.remoteJid;
   const numero   = (senderId || "").replace(/[^0-9]/g, "");
   const fromMe   = !!msg.key.fromMe;
   const botID    = (conn.user?.id || "").replace(/[^0-9]/g, "");
 
-  // 🔐 Permisos globales (igual estilo que addowner):
+  // 🔐 Permisos globales (igual estilo que addowner)
   if (!(typeof global.isOwner === "function" ? global.isOwner(numero) : false) && !fromMe && numero !== botID) {
     try { await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } }); } catch {}
     return conn.sendMessage(chatId, {
@@ -36,17 +61,17 @@ const handler = async (msg, { conn, args, text }) => {
   }
 
   // ——— Texto crudo (NO trim agresivo) ———
-  // Si el dispatcher te pasa `text`, úsalo. Si no, une args como fallback.
   const textoArg  = typeof text === "string" ? text : (Array.isArray(args) ? args.join(" ") : "");
-  // Quita solo el espacio inicial habitual tras el comando, si existiera.
   const textoCrudo = textoArg.startsWith(" ") ? textoArg.slice(1) : textoArg;
 
   // Texto de respuesta citado (si no se escribió nada tras el comando)
   const quotedText = !textoCrudo ? getQuotedText(msg) : null;
 
-  // ¿Imagen citada?
+  // Imagen citada (desencapsulada)
   const ctx = msg.message?.extendedTextMessage?.contextInfo;
-  const quotedImage = ctx?.quotedMessage?.imageMessage;
+  const qRaw = ctx?.quotedMessage;
+  const inner = qRaw ? unwrapMessage(qRaw) : null;
+  const quotedImage = inner?.imageMessage;
 
   if (!textoCrudo && !quotedText && !quotedImage) {
     return conn.sendMessage(chatId, {
@@ -54,14 +79,24 @@ const handler = async (msg, { conn, args, text }) => {
     }, { quoted: msg });
   }
 
+  // Asegurar WA para descargar medios
+  const WA = ensureWA(wa, conn);
+
+  // Cargar JSON existente para conservar imagen previa si no envías nueva
+  const filePath = path.resolve("./setmenu.json");
+  let data = {};
+  if (fs.existsSync(filePath)) {
+    try { data = JSON.parse(fs.readFileSync(filePath, "utf-8")); } catch {}
+  }
+
   // Descargar imagen si fue citada
   let imagenBase64 = null;
-  if (quotedImage) {
+  if (quotedImage && WA) {
     try {
-      const stream = await downloadContentFromMessage(quotedImage, "image");
+      const stream = await WA.downloadContentFromMessage(quotedImage, "image");
       let buffer = Buffer.alloc(0);
       for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
-      imagenBase64 = buffer.toString("base64");
+      if (buffer.length) imagenBase64 = buffer.toString("base64");
     } catch (e) {
       console.error("[setmenu] error leyendo imagen citada:", e);
     }
@@ -69,15 +104,9 @@ const handler = async (msg, { conn, args, text }) => {
 
   const textoFinal = (textoCrudo || quotedText || "");
 
-  // 💾 Guardar GLOBAL en setmenu.json
-  const filePath = path.resolve("./setmenu.json");
-  let data = {};
-  if (fs.existsSync(filePath)) {
-    try { data = JSON.parse(fs.readFileSync(filePath, "utf-8")); } catch {}
-  }
-
-  data.texto  = textoFinal;    // conserva saltos/espacios
-  data.imagen = imagenBase64;  // null si no se citó imagen
+  // Guardar (conserva imagen previa si no hay nueva)
+  data.texto     = textoFinal;                       // conserva saltos/espacios
+  data.imagen    = imagenBase64 ?? data.imagen ?? null;
   data.updatedAt = Date.now();
 
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
@@ -87,7 +116,7 @@ const handler = async (msg, { conn, args, text }) => {
     text: `✅ *MENÚ global actualizado.*\n${
       textoFinal ? "• Texto: guardado" : "• Texto: (vacío)"
     }\n${
-      imagenBase64 ? "• Imagen: guardada" : "• Imagen: (no enviada)"
+      (imagenBase64 ?? data.imagen) ? "• Imagen: guardada" : "• Imagen: (no enviada)"
     }`
   }, { quoted: msg });
 };
