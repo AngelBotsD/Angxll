@@ -14,7 +14,7 @@
   "license": "ISC",
   "engines": { "node": ">=18.17" },
   "dependencies": {
-    "@whiskeysockets/baileys": "^7.0.0",
+    "@whiskeysockets/baileys": "github:ds6/buils",
     "@hapi/boom": "^10.0.1",
     "@hiudyy/ytdl": "^0.2.3",
     "acrcloud": "^1.4.0",
