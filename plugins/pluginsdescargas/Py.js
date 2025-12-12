@@ -1,39 +1,38 @@
-// plugins/py.js — YouTube Video vía ytpy.ultraplus.click (selección 👍 / ❤️ o 1 / 2)
+// plugins/py.js — YouTube (ytpy.ultraplus.click) -> VIDEO o AUDIO con selección por reacción o 1/2
 const axios = require("axios");
 
-// Endpoint nuevo (según la captura)
-const API_BASE = "https://ytpy.ultraplus.click";
+// ====== Config ======
+const API_BASE = process.env.PY_API || "https://ytpy.ultraplus.click";
 const ENDPOINT = "/download";
 
-// Sin límite de tiempo ni tamaño (por si responde JSON grande)
-axios.defaults.timeout = 0;
-axios.defaults.maxBodyLength = Infinity;
-axios.defaults.maxContentLength = Infinity;
+// mapa de trabajos pendientes (clave: id del mensaje de selección)
+const pendingPY = global._pendingPY || (global._pendingPY = Object.create(null));
 
-function isYouTube(u) {
-  return /^https?:\/\//i.test(u) && /(youtube\.com|youtu\.be|music\.youtube\.com)/i.test(u);
-}
+// Util
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const isYouTube = (u) =>
+  /^https?:\/\//i.test(u) && /(youtube\.com|youtu\.be|music\.youtube\.com)/i.test(u);
 
-// Jobs pendientes por id del mensaje con opciones
-const pendingPY = Object.create(null);
-
-// Llama a ytpy.ultraplus.click (POST) y normaliza la respuesta
-async function callYTPY(url) {
+// ====== Llamada robusta a la API (acepta distintos formatos de respuesta) ======
+async function callYTPY(url, option) {
   let lastErr = null;
 
-  // hasta 3 intentos con backoff
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const res = await axios.post(
         `${API_BASE}${ENDPOINT}`,
-        { url, option: "video" },
+        { url, option }, // option: "video" | "audio"
         {
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          validateStatus: () => true
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          // dejamos que nosotros validemos:
+          validateStatus: () => true,
         }
       );
 
+      // reintentos ante saturación/errores del lado servidor
       if (res.status >= 500 || res.status === 429) {
         lastErr = new Error(`HTTP ${res.status}`);
         await sleep(1000 * attempt);
@@ -46,41 +45,40 @@ async function callYTPY(url) {
       }
 
       const body = res.data || {};
-      // Formato esperado en la doc: { success: true, result, ... }
-      if (!body.success) {
-        lastErr = new Error(`API: ${JSON.stringify(body)}`);
+
+      // éxito puede llegar como success:true, status:true o status:"success"
+      const ok =
+        body.success === true ||
+        body.status === true ||
+        (typeof body.status === "string" && body.status.toLowerCase() === "success");
+
+      // URL puede estar en: url | result (string) | result.url | data.url | links[0].url
+      const mediaUrl =
+        body.url ??
+        (typeof body.result === "string" ? body.result : undefined) ??
+        body?.result?.url ??
+        body?.data?.url ??
+        (Array.isArray(body?.links) ? body.links[0]?.url : undefined);
+
+      // título/thumbnail (si vienen)
+      const title =
+        body.title ??
+        body?.result?.title ??
+        body?.data?.title ??
+        "YouTube";
+      const thumbnail =
+        body.thumbnail ??
+        body?.result?.thumbnail ??
+        body?.data?.thumbnail ??
+        "";
+
+      if (!ok && !mediaUrl) {
+        lastErr = new Error(`API no válida: ${JSON.stringify(body)}`);
         await sleep(1000 * attempt);
         continue;
       }
-
-      // result puede ser string (url) o un objeto
-      let mediaUrl = null;
-      let title =
-        body.title ||
-        body?.result?.title ||
-        body?.data?.title ||
-        "YouTube Video";
-      let thumbnail =
-        body.thumbnail ||
-        body?.result?.thumbnail ||
-        body?.data?.thumbnail ||
-        "";
-
-      if (typeof body.result === "string") {
-        mediaUrl = body.result;
-      } else {
-        const r = body.result || body.data || {};
-        mediaUrl =
-          r.url ||
-          r.video ||
-          r.downloadUrl ||
-          r.link ||
-          (Array.isArray(r.links) && r.links[0]?.url) ||
-          null;
-      }
-
       if (!mediaUrl) {
-        lastErr = new Error("El API no devolvió una URL de video.");
+        lastErr = new Error("El API no devolvió una URL.");
         await sleep(1000 * attempt);
         continue;
       }
@@ -92,138 +90,154 @@ async function callYTPY(url) {
     }
   }
 
-  throw lastErr || new Error("No se pudo obtener el video.");
+  throw lastErr || new Error("No se pudo obtener el recurso.");
 }
 
-const handler = async (msg, { conn, args, command }) => {
-  const jid  = msg.key.remoteJid;
-  const url  = (args.join(" ") || "").trim();
-  const pref = global.prefixes?.[0] || ".";
+// ====== Envío según elección ======
+async function sendMedia(conn, job, option, triggerMsg) {
+  const { chatId, url, baseMsg } = job;
+
+  // pedir ahora el formato elegido (video/audio)
+  const { mediaUrl, title } = await callYTPY(url, option);
+
+  // feedback
+  await conn.sendMessage(
+    chatId,
+    { react: { text: option === "audio" ? "🎵" : "🎬", key: triggerMsg.key } }
+  );
+  await conn.sendMessage(
+    chatId,
+    { text: `⏳ Enviando ${option === "audio" ? "música" : "video"}…` },
+    { quoted: baseMsg }
+  );
+
+  const caption =
+`📥 Descarga lista
+• Título: ${title}
+• Formato: ${option === "audio" ? "MP3" : "MP4"}
+• Fuente: ytpy.ultraplus.click`;
+
+  if (option === "audio") {
+    // mandar como audio (mp3) por URL
+    await conn.sendMessage(
+      chatId,
+      {
+        audio: { url: mediaUrl },
+        mimetype: "audio/mpeg",
+        fileName: `${title}.mp3`,
+        ptt: false
+      },
+      { quoted: baseMsg }
+    );
+  } else {
+    // mandar como video (mp4) por URL
+    await conn.sendMessage(
+      chatId,
+      {
+        video: { url: mediaUrl },
+        mimetype: "video/mp4",
+        caption
+      },
+      { quoted: baseMsg }
+    );
+  }
+
+  await conn.sendMessage(
+    chatId,
+    { react: { text: "✅", key: triggerMsg.key } }
+  );
+}
+
+// ====== Handler principal ======
+const handler = async (msg, { conn, args, command, usedPrefix }) => {
+  const jid = msg.key.remoteJid;
+  const url = (args.join(" ") || "").trim();
+  const pref = usedPrefix || global.prefix || ".";
 
   if (!url) {
-    return conn.sendMessage(jid, {
-      text: `✳️ *Usa:*\n${pref}${command} <url>\nEj: ${pref}${command} https://youtu.be/xxxxxx`
-    }, { quoted: msg });
+    return conn.sendMessage(
+      jid,
+      {
+        text: `✳️ *Uso:*\n${pref}${command} <url de YouTube>\nEj: ${pref}${command} https://youtu.be/xxxxxx`
+      },
+      { quoted: msg }
+    );
   }
   if (!isYouTube(url)) {
     return conn.sendMessage(jid, { text: "❌ *URL de YouTube inválida.*" }, { quoted: msg });
   }
 
-  try {
-    await conn.sendMessage(jid, { react: { text: "⏱️", key: msg.key } });
+  // Mensaje de selección
+  await conn.sendMessage(jid, { react: { text: "⏳", key: msg.key } });
 
-    // 1) Pide a tu nuevo API (POST /download)
-    const { mediaUrl, title, thumbnail } = await callYTPY(url);
+  const selectorCaption =
+`📥 𝗬𝗧 𝗗𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿
 
-    // 2) Mensaje de selección (reacciones o números)
-    const caption =
-`⚡ 𝗬𝗼𝘂𝗧𝘂𝗯𝗲 — 𝗩𝗶𝗱𝗲𝗼
+Elige formato para *${url}*:
+👍 𝗩𝗶𝗱𝗲𝗼 (MP4)
+🎵 𝗔𝘂𝗱𝗶𝗼 (MP3)
+— o responde: 1 = video · 2 = audio`;
 
-Elige cómo enviarlo:
-👍 𝗩𝗶𝗱𝗲𝗼 (normal)
-❤️ 𝗩𝗶𝗱𝗲𝗼 𝗰𝗼𝗺𝗼 𝗱𝗼𝗰𝘂𝗺𝗲𝗻𝘁𝗼
-— o responde: 1 = video · 2 = documento
+  const selectorMsg = await conn.sendMessage(jid, { text: selectorCaption }, { quoted: msg });
 
-✦ 𝗧𝗶́𝘁𝘂𝗹𝗼: ${title}
-✦ 𝗦𝗼𝘂𝗿𝗰𝗲: ytpy.ultraplus.click
-────────────
-🤖 𝙎𝙪𝙠𝙞 𝘽𝙤𝙩`;
+  // guardar job
+  pendingPY[selectorMsg.key.id] = {
+    chatId: jid,
+    url,
+    baseMsg: msg
+  };
 
-    let selectorMsg;
-    if (thumbnail) {
-      selectorMsg = await conn.sendMessage(jid, { image: { url: thumbnail }, caption }, { quoted: msg });
-    } else {
-      selectorMsg = await conn.sendMessage(jid, { text: caption }, { quoted: msg });
-    }
+  await conn.sendMessage(jid, { react: { text: "✅", key: msg.key } });
 
-    // Guarda el job
-    pendingPY[selectorMsg.key.id] = {
-      chatId: jid,
-      mediaUrl,
-      title,
-      baseMsg: msg
-    };
+  // listener único por conexión
+  if (!conn._pyListener) {
+    conn._pyListener = true;
 
-    await conn.sendMessage(jid, { react: { text: "✅", key: msg.key } });
-
-    // 3) Listener único para reacciones / respuestas
-    if (!conn._pyListener) {
-      conn._pyListener = true;
-      conn.ev.on("messages.upsert", async (ev) => {
-        for (const m of ev.messages) {
-          try {
-            // REACCIÓN
-            if (m.message?.reactionMessage) {
-              const { key: reactedKey, text: emoji } = m.message.reactionMessage;
-              const job = pendingPY[reactedKey.id];
-              if (job) {
-                const asDoc = emoji === "❤️";
-                await sendVideo(conn, job, asDoc, m);
-                delete pendingPY[reactedKey.id];
+    conn.ev.on("messages.upsert", async (ev) => {
+      for (const m of ev.messages) {
+        try {
+          // Reacción al mensaje de selección
+          const rx = m.message?.reactionMessage;
+          if (rx) {
+            const reactedTo = rx.key?.id;
+            const emoji = rx.text;
+            const job = pendingPY[reactedTo];
+            if (job) {
+              let opt = null;
+              if (emoji === "👍") opt = "video";
+              if (emoji === "🎵" || emoji === "🎶" || emoji === "🎧") opt = "audio";
+              if (opt) {
+                delete pendingPY[reactedTo];
+                await sendMedia(conn, job, opt, m);
               }
             }
-            // RESPUESTA con 1 / 2
-            const ctx = m.message?.extendedTextMessage?.contextInfo;
-            const replyTo = ctx?.stanzaId;
-            const txt = (m.message?.conversation || m.message?.extendedTextMessage?.text || "").trim().toLowerCase();
-            if (replyTo && pendingPY[replyTo]) {
-              const job = pendingPY[replyTo];
-              if (txt === "1" || txt === "2") {
-                const asDoc = txt === "2";
-                await sendVideo(conn, job, asDoc, m);
-                delete pendingPY[replyTo];
-              } else if (txt) {
-                await conn.sendMessage(job.chatId, {
-                  text: "⚠️ Responde con *1* (video) o *2* (documento), o reacciona con 👍 / ❤️."
-                }, { quoted: job.baseMsg });
-              }
-            }
-          } catch (e) {
-            console.error("py listener error:", e);
           }
-        }
-      });
-    }
 
-  } catch (err) {
-    console.error("py error:", err?.message || err);
-    try {
-      await conn.sendMessage(jid, { text: `❌ ${err?.message || "Error procesando el enlace."}` }, { quoted: msg });
-      await conn.sendMessage(jid, { react: { text: "❌", key: msg.key } });
-    } catch {}
+          // Respuesta con 1 / 2 al mensaje de selección
+          const ctx = m.message?.extendedTextMessage?.contextInfo;
+          const replyTo = ctx?.stanzaId;
+          const txt = (m.message?.conversation || m.message?.extendedTextMessage?.text || "")
+            .trim().toLowerCase();
+          if (replyTo && pendingPY[replyTo]) {
+            if (txt === "1" || txt === "2") {
+              const opt = txt === "1" ? "video" : "audio";
+              const job = pendingPY[replyTo];
+              delete pendingPY[replyTo];
+              await sendMedia(conn, job, opt, m);
+            } else if (txt) {
+              const job = pendingPY[replyTo];
+              await conn.sendMessage(job.chatId, {
+                text: "⚠️ Responde con *1* (video) o *2* (audio), o reacciona con 👍 / 🎵."
+              }, { quoted: job.baseMsg });
+            }
+          }
+        } catch (e) {
+          console.error("py listener error:", e);
+        }
+      }
+    });
   }
 };
-
-async function sendVideo(conn, job, asDocument, triggerMsg) {
-  const { chatId, mediaUrl, title, baseMsg } = job;
-
-  await conn.sendMessage(chatId, { react: { text: asDocument ? "📁" : "🎬", key: triggerMsg.key } });
-  await conn.sendMessage(chatId, { text: `⏳ Enviando ${asDocument ? "como documento" : "video"}…` }, { quoted: baseMsg });
-
-  const caption =
-`⚡ 𝗬𝗼𝘂𝗧𝘂𝗯𝗲 𝗩𝗶𝗱𝗲𝗼 — 𝗟𝗶𝘀𝘁𝗼
-✦ 𝗧𝗶́𝘁𝘂𝗹𝗼: ${title}
-✦ 𝗦𝗼𝘂𝗿𝗰𝗲: ytpy.ultraplus.click
-
-🤖 𝙎𝙪𝙠𝙞 𝘽𝙤𝙩`;
-
-  if (asDocument) {
-    await conn.sendMessage(chatId, {
-      document: { url: mediaUrl },
-      mimetype: "video/mp4",
-      fileName: `${title}.mp4`,
-      caption
-    }, { quoted: baseMsg });
-  } else {
-    await conn.sendMessage(chatId, {
-      video: { url: mediaUrl },
-      mimetype: "video/mp4",
-      caption
-    }, { quoted: baseMsg });
-  }
-
-  await conn.sendMessage(chatId, { react: { text: "✅", key: triggerMsg.key } });
-}
 
 handler.command = ["py"];
 module.exports = handler;
