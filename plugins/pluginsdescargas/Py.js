@@ -1,5 +1,5 @@
-// plugins/py.js — YouTube (ytpy.ultraplus.click) -> VIDEO/AUDIO
-// Descarga local con ffmpeg para evitar 403 de googlevideo al mandar URL directa
+// plugins/py.js — YouTube -> VIDEO/AUDIO con fallback a yt-dlp si googlevideo da 403
+// Requiere: ffmpeg y yt-dlp instalados en el contenedor
 
 const fs = require("fs");
 const path = require("path");
@@ -7,49 +7,46 @@ const { exec } = require("child_process");
 const { promisify } = require("util");
 const axios = require("axios");
 
-const execPromise = promisify(exec);
+const sh = promisify(exec);
 
 // ===== Config =====
 const API_BASE = process.env.PY_API || "https://ytpy.ultraplus.click";
 const ENDPOINT = "/download";
 const TMP_DIR = path.join(__dirname, "../tmp");
-const MAX_WA_MB = 100; // límite razonable para WhatsApp (~100 MB)
+const MAX_WA_MB = 100; // límite razonable de WhatsApp (~100 MB)
+
+if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
 // cache de trabajos (id del mensaje de selección -> job)
 const pendingPY = global._pendingPY_FF || (global._pendingPY_FF = Object.create(null));
 
-if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
-
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const isYouTube = (u) => /^https?:\/\//i.test(u) && /(youtube\.com|youtu\.be|music\.youtube\.com)/i.test(u);
+const mb = (b) => (b / (1024 * 1024)).toFixed(2);
 
-// ===== Llamada robusta a la API =====
+// ===== API ytpy.ultraplus.click =====
 async function callYTPY(url, option) {
   let lastErr = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let i = 1; i <= 3; i++) {
     try {
       const res = await axios.post(`${API_BASE}${ENDPOINT}`, { url, option }, {
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         validateStatus: () => true
       });
-
       if (res.status >= 500 || res.status === 429) {
         lastErr = new Error(`HTTP ${res.status}`);
-        await sleep(1000 * attempt);
+        await sleep(1000 * i);
         continue;
       }
       if (res.status !== 200) {
         lastErr = new Error(`HTTP ${res.status}`);
-        await sleep(1000 * attempt);
+        await sleep(1000 * i);
         continue;
       }
-
       const body = res.data || {};
-      const ok =
-        body.success === true ||
-        body.status === true ||
-        (typeof body.status === "string" && body.status.toLowerCase() === "success");
-
+      const ok = body.success === true ||
+                 body.status === true ||
+                 (typeof body.status === "string" && body.status.toLowerCase() === "success");
       const mediaUrl =
         body.url ??
         (typeof body.result === "string" ? body.result : undefined) ??
@@ -62,44 +59,87 @@ async function callYTPY(url, option) {
 
       if (!ok && !mediaUrl) {
         lastErr = new Error(`API inválida: ${JSON.stringify(body)}`);
-        await sleep(1000 * attempt);
+        await sleep(1000 * i);
         continue;
       }
       if (!mediaUrl) {
-        lastErr = new Error("El API no devolvió una URL.");
-        await sleep(1000 * attempt);
+        lastErr = new Error("El API no devolvió URL.");
+        await sleep(1000 * i);
         continue;
       }
-
       return { mediaUrl, title };
     } catch (e) {
       lastErr = e;
-      await sleep(1000 * attempt);
+      await sleep(1000 * i);
     }
   }
   throw lastErr || new Error("No se pudo obtener el recurso.");
 }
 
-// ===== Descarga con ffmpeg =====
-async function downloadWithFfmpeg(inputUrl, outputPath, kind /* "video"|"audio" */) {
-  // Forzamos whitelist por si es HLS/M3U8 y seteamos UA por si acaso
-  const userAgent = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36';
-
+// ===== ffmpeg directo (primera opción) =====
+async function downloadWithFfmpeg(inputUrl, outPath, kind /* "video"|"audio" */) {
+  const ua = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36';
   let cmd;
   if (kind === "audio") {
-    // Extraer a MP3 192 kbps
-    cmd = `ffmpeg -hide_banner -loglevel error -user_agent "${userAgent}" -protocol_whitelist file,http,https,tcp,tls -i "${inputUrl}" -vn -c:a libmp3lame -b:a 192k -y "${outputPath}"`;
+    cmd = `ffmpeg -hide_banner -loglevel error -user_agent "${ua}" -protocol_whitelist file,http,https,tcp,tls -i "${inputUrl}" -vn -c:a libmp3lame -b:a 192k -y "${outPath}"`;
   } else {
-    // Copiar a MP4 (si es AAC lo normaliza; para HLS usa whitelist)
-    cmd = `ffmpeg -hide_banner -loglevel error -user_agent "${userAgent}" -protocol_whitelist file,http,https,tcp,tls -i "${inputUrl}" -c copy -bsf:a aac_adtstoasc -y "${outputPath}"`;
+    cmd = `ffmpeg -hide_banner -loglevel error -user_agent "${ua}" -protocol_whitelist file,http,https,tcp,tls -i "${inputUrl}" -c copy -bsf:a aac_adtstoasc -y "${outPath}"`;
   }
-
-  // timeout 0 = sin límite; maxBuffer grande por si spamea logs
-  await execPromise(cmd, { timeout: 0, maxBuffer: 1024 * 1024 * 100 });
-  return outputPath;
+  try {
+    await sh(cmd, { timeout: 0, maxBuffer: 1024 * 1024 * 100 });
+    return outPath;
+  } catch (e) {
+    // Señalamos 403 para activar fallback
+    const s = (e.stderr || e.stdout || e.message || "").toLowerCase();
+    if (s.includes("403") || s.includes("forbidden") || s.includes("access denied")) {
+      const err = new Error("FFMPEG_FORBIDDEN");
+      err.code = "FFMPEG_FORBIDDEN";
+      throw err;
+    }
+    throw e;
+  }
 }
 
-function bytesToMB(b) { return (b / (1024 * 1024)).toFixed(2); }
+// ===== yt-dlp (fallback) =====
+async function downloadWithYtDlp(youtubeUrl, outPath, kind /* "video"|"audio" */) {
+  // Asegúrate de tener yt-dlp en PATH (o instala con apt/pip)
+  if (kind === "audio") {
+    const tmp = outPath.replace(/\.mp3$/i, "");
+    const cmd = `yt-dlp -x --audio-format mp3 -o "${tmp}.%(ext)s" "${youtubeUrl}"`;
+    await sh(cmd, { timeout: 0, maxBuffer: 1024 * 1024 * 100 });
+    // yt-dlp nombra según ext -> buscamos .mp3 generado
+    const base = path.basename(tmp);
+    const dir = path.dirname(tmp);
+    const files = fs.readdirSync(dir).filter(f => f.startsWith(base) && f.endsWith(".mp3"));
+    if (!files.length) throw new Error("yt-dlp no generó mp3");
+    fs.renameSync(path.join(dir, files[0]), outPath);
+    return outPath;
+  } else {
+    const cmd = `yt-dlp -f "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best" --merge-output-format mp4 -o "${outPath}" "${youtubeUrl}"`;
+    await sh(cmd, { timeout: 0, maxBuffer: 1024 * 1024 * 100 });
+    if (!fs.existsSync(outPath)) throw new Error("yt-dlp no generó mp4");
+    return outPath;
+  }
+}
+
+// ===== Descargar (intenta API+ffmpeg -> fallback yt-dlp) =====
+async function downloadSmart({ youtubeUrl, option }) {
+  const stamp = Date.now();
+  const outPath = path.join(TMP_DIR, `${option}_${stamp}.${option === "audio" ? "mp3" : "mp4"}`);
+
+  // 1) intentar con API + ffmpeg (rápido si el enlace sirve)
+  try {
+    const { mediaUrl, title } = await callYTPY(youtubeUrl, option);
+    const t0 = Date.now();
+    await downloadWithFfmpeg(mediaUrl, outPath, option);
+    return { outPath, tookSec: ((Date.now() - t0) / 1000).toFixed(1), title };
+  } catch (e) {
+    // 2) si es 403/forbidden u otro error, caemos a yt-dlp
+    const t0 = Date.now();
+    const res = await downloadWithYtDlp(youtubeUrl, outPath, option);
+    return { outPath: res, tookSec: ((Date.now() - t0) / 1000).toFixed(1), title: "YouTube" };
+  }
+}
 
 // ===== Envío después de elegir =====
 async function sendMedia(conn, job, option, triggerMsg) {
@@ -108,27 +148,19 @@ async function sendMedia(conn, job, option, triggerMsg) {
   await conn.sendMessage(chatId, { react: { text: option === "audio" ? "🎵" : "🎬", key: triggerMsg.key } });
   await conn.sendMessage(chatId, { text: `⏳ Procesando ${option === "audio" ? "música" : "video"}…` }, { quoted: baseMsg });
 
-  // 1) pedir URL real para el formato elegido
-  const { mediaUrl, title } = await callYTPY(url, option);
-
-  // 2) descargar local con ffmpeg
-  const stamp = Date.now();
-  const outPath = path.join(TMP_DIR, `${option}_${stamp}.${option === "audio" ? "mp3" : "mp4"}`);
-
-  const t0 = Date.now();
-  await downloadWithFfmpeg(mediaUrl, outPath, option);
-  const took = ((Date.now() - t0) / 1000).toFixed(1);
+  // descarga inteligente
+  const { outPath, tookSec, title } = await downloadSmart({ youtubeUrl: url, option });
 
   if (!fs.existsSync(outPath)) {
     await conn.sendMessage(chatId, { text: "❌ Error al procesar el archivo." }, { quoted: baseMsg });
     return;
   }
 
-  const sizeMB = Number(bytesToMB(fs.statSync(outPath).size));
+  const sizeMB = Number(mb(fs.statSync(outPath).size));
   if (sizeMB > MAX_WA_MB) {
-    fs.unlinkSync(outPath);
+    try { fs.unlinkSync(outPath); } catch {}
     await conn.sendMessage(chatId, {
-      text: `❌ El archivo pesa *${sizeMB} MB* y excede el límite de WhatsApp (~${MAX_WA_MB} MB).\n⚠️ Prueba con otra calidad o un video más corto.`
+      text: `❌ El archivo pesa *${sizeMB} MB* y excede el límite de WhatsApp (~${MAX_WA_MB} MB).\nPrueba con otra calidad o un video más corto.`
     }, { quoted: baseMsg });
     await conn.sendMessage(chatId, { react: { text: "❌", key: triggerMsg.key } });
     return;
@@ -139,10 +171,9 @@ async function sendMedia(conn, job, option, triggerMsg) {
 • Título: ${title}
 • Formato: ${option === "audio" ? "MP3" : "MP4"}
 • Tamaño: ${sizeMB} MB
-• Tiempo: ${took}s
-• Fuente: ytpy.ultraplus.click`;
+• Tiempo: ${tookSec}s
+• Método: ${option === "audio" ? "ffmpeg/yt-dlp" : "ffmpeg/yt-dlp"}`;
 
-  // 3) enviar a WhatsApp
   try {
     if (option === "audio") {
       await conn.sendMessage(chatId, {
@@ -160,7 +191,6 @@ async function sendMedia(conn, job, option, triggerMsg) {
     }
     await conn.sendMessage(chatId, { react: { text: "✅", key: triggerMsg.key } });
   } finally {
-    // 4) limpiar
     try { fs.unlinkSync(outPath); } catch {}
   }
 }
@@ -180,7 +210,6 @@ const handler = async (msg, { conn, args, command, usedPrefix }) => {
     return conn.sendMessage(jid, { text: "❌ *URL de YouTube inválida.*" }, { quoted: msg });
   }
 
-  // Mensaje de selección
   await conn.sendMessage(jid, { react: { text: "⏳", key: msg.key } });
   const selector = await conn.sendMessage(jid, {
     text: `📥 𝗬𝗧 𝗗𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿\n\nElige formato para *${url}*:\n👍 𝗩𝗶𝗱𝗲𝗼 (MP4)\n🎵 𝗔𝘂𝗱𝗶𝗼 (MP3)\n— o responde: 1 = video · 2 = audio`
@@ -189,14 +218,13 @@ const handler = async (msg, { conn, args, command, usedPrefix }) => {
   pendingPY[selector.key.id] = { chatId: jid, url, baseMsg: msg };
   await conn.sendMessage(jid, { react: { text: "✅", key: msg.key } });
 
-  // listener único
   if (!conn._pyFFListener) {
     conn._pyFFListener = true;
 
     conn.ev.on("messages.upsert", async (ev) => {
       for (const m of ev.messages) {
         try {
-          // Reacción
+          // Reacciones
           const rx = m.message?.reactionMessage;
           if (rx) {
             const reactedTo = rx.key?.id;
@@ -213,7 +241,7 @@ const handler = async (msg, { conn, args, command, usedPrefix }) => {
             }
           }
 
-          // Respuesta 1/2
+          // Respuesta 1 / 2
           const ctx = m.message?.extendedTextMessage?.contextInfo;
           const replyTo = ctx?.stanzaId;
           const txt = (m.message?.conversation || m.message?.extendedTextMessage?.text || "").trim().toLowerCase();
@@ -231,7 +259,7 @@ const handler = async (msg, { conn, args, command, usedPrefix }) => {
             }
           }
         } catch (e) {
-          console.error("py ffmpeg listener error:", e);
+          console.error("py listener error:", e);
         }
       }
     });
