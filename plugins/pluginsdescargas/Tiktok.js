@@ -1,6 +1,5 @@
 
 // comandos/tt.js — TikTok con opciones (👍 video / ❤️ documento o 1 / 2)
-// Usa tu API: POST /tiktok
 const axios = require("axios");
 
 const API_BASE = process.env.API_BASE || "https://api-russell-test.ultraplus.click";
@@ -15,16 +14,16 @@ const fmtSec = (s) => {
   return (h ? `${h}:` : "") + `${m.toString().padStart(2,"0")}:${sec.toString().padStart(2,"0")}`;
 };
 
+// jobs pendientes por id del mensaje de opciones
 const pendingTT = Object.create(null);
 
 async function getTikTokFromSky(url){
-  // ✅ endpoint correcto: POST /tiktok
+  // ✅ endpoint real de tu API: POST /tiktok
   const { data: res, status: http } = await axios.post(
     `${API_BASE}/tiktok`,
     { url },
     {
       headers: {
-        // ✅ tu middleware acepta apikey o Authorization
         apikey: API_KEY,
         Authorization: `Bearer ${API_KEY}`,
         "Content-Type": "application/json",
@@ -34,15 +33,16 @@ async function getTikTokFromSky(url){
     }
   );
 
-  if (http !== 200) throw new Error(`HTTP ${http}${res?.message ? ` - ${res.message}` : ""}`);
+  if (http !== 200) {
+    throw new Error(`HTTP ${http}${res?.message ? ` - ${res.message}` : ""}`);
+  }
 
-  // ✅ formato real de tu API: { status: true, result: {...} }
+  // ✅ formato real: { status: true, result: {...} }
   if (!res || res.status !== true || !res.result?.media?.video) {
     throw new Error(res?.message || "La API no devolvió un video válido.");
   }
 
   const r = res.result;
-
   return {
     title: r.title || "TikTok",
     author: r.author || {},
@@ -63,7 +63,7 @@ const handler = async (msg, { conn, args, command }) => {
   if (!text) {
     return conn.sendMessage(chatId, {
       text:
-`✳️ Usa:
+`✳️ 𝙐𝙨𝙖:
 ${pref}${command} <enlace>
 Ej: ${pref}${command} https://vm.tiktok.com/xxxxxx/`
     }, { quoted: msg });
@@ -71,7 +71,7 @@ Ej: ${pref}${command} https://vm.tiktok.com/xxxxxx/`
 
   const url = args[0];
   if (!/^https?:\/\//i.test(url) || !/tiktok\.com|vt\.tiktok\.com|vm\.tiktok\.com/i.test(url)) {
-    return conn.sendMessage(chatId, { text: "❌ Enlace de TikTok inválido." }, { quoted: msg });
+    return conn.sendMessage(chatId, { text: "❌ 𝙀𝙣𝙡𝙖𝙘𝙚 𝙙𝙚 𝙏𝙞𝙠𝙏𝙤𝙠 𝙞𝙣𝙫𝙖́𝙡𝙞𝙙𝙤." }, { quoted: msg });
   }
 
   try {
@@ -86,62 +86,77 @@ Ej: ${pref}${command} https://vm.tiktok.com/xxxxxx/`
     const likes   = d.likes ?? 0;
     const comments= d.comments ?? 0;
 
+    // 2) Mensaje de opciones
     const txt =
-`⚡ TikTok — opciones
+`⚡ 𝗧𝗶𝗸𝗧𝗼𝗸 — 𝗼𝗽𝗰𝗶𝗼𝗻𝗲𝘀
 
 Elige cómo enviarlo:
-👍 Video (normal)
-❤️ Video como documento
-— o responde: 1 = video · 2 = documento
+👍 𝗩𝗶𝗱𝗲𝗼 (normal)
+❤️ 𝗩𝗶𝗱𝗲𝗼 𝗰𝗼𝗺𝗼 𝗱𝗼𝗰𝘂𝗺𝗲𝗻𝘁𝗼
+— 𝗼 responde: 1 = video · 2 = documento
 
-✦ Título: ${title}
-✦ Autor: ${author}
-✦ Dur.: ${durTxt} • 👍 ${likes} · 💬 ${comments}
-✦ Source: ${API_BASE}
+✦ 𝗧𝗶́𝘁𝘂𝗹𝗼: ${title}
+✦ 𝗔𝘂𝘁𝗼𝗿: ${author}
+✦ 𝗗𝘂𝗿.: ${durTxt} • 👍 ${likes} · 💬 ${comments}
+✦ 𝗦𝗼𝘂𝗿𝗰𝗲: ${API_BASE}
 ────────────
-🤖 Suki Bot`;
+🤖 𝙎𝙪𝙠𝙞 𝘽𝙤𝙩`;
 
     const preview = await conn.sendMessage(chatId, { text: txt }, { quoted: msg });
 
+    // guarda el trabajo
     pendingTT[preview.key.id] = {
       chatId,
       url: d.video,
       caption:
-`⚡ TikTok listo
+`⚡ 𝗧𝗶𝗸𝗧𝗼𝗸 — 𝘃𝗶𝗱𝗲𝗼 𝗹𝗶𝘀𝘁𝗼
 
-✦ Título: ${title}
-✦ Autor: ${author}
-✦ Duración: ${durTxt}
-✦ Likes: ${likes} • Comentarios: ${comments}
+✦ 𝗧𝗶́𝘁𝘂𝗹𝗼: ${title}
+✦ 𝗔𝘂𝘁𝗼𝗿: ${author}
+✦ 𝗗𝘂𝗿𝗮𝗰𝗶𝗼́𝗻: ${durTxt}
+✦ 𝗟𝗶𝗸𝗲𝘀: ${likes}  •  𝗖𝗼𝗺𝗲𝗻𝘁𝗮𝗿𝗶𝗼𝘀: ${comments}
 
-✦ Source: ${API_BASE}
+✦ 𝗦𝗼𝘂𝗿𝗰𝗲: ${API_BASE}
 ────────────
-🤖 Suki Bot`,
+🤖 𝙎𝙪𝙠𝙞 𝘽𝙤𝙩`,
       quotedBase: msg
     };
 
     await conn.sendMessage(chatId, { react: { text: "✅", key: msg.key } });
 
+    // 3) Listener único
     if (!conn._ttListener) {
       conn._ttListener = true;
 
       conn.ev.on("messages.upsert", async ev => {
         for (const m of ev.messages) {
           try {
-            // REACCIONES
+            // A) REACCIONES 👍 / ❤️
             if (m.message?.reactionMessage) {
               const { key: reactKey, text: emoji } = m.message.reactionMessage;
               const job = pendingTT[reactKey.id];
               if (job) {
                 const asDoc = emoji === "❤️";
-                await sendTikTok(conn, job, asDoc, m);
+
+                // ✅ volver a poner: reacción + texto "descargando..."
+                await conn.sendMessage(job.chatId, {
+                  react: { text: asDoc ? "📁" : "🎬", key: m.key }
+                });
+                await conn.sendMessage(job.chatId, {
+                  text: `⏳ Descargando video${asDoc ? " en documento" : ""}…`
+                }, { quoted: job.quotedBase });
+
+                await sendTikTok(conn, job, asDoc);
                 delete pendingTT[reactKey.id];
+
+                await conn.sendMessage(job.chatId, { react: { text: "✅", key: m.key } });
               }
             }
 
-            // RESPUESTAS 1/2
+            // B) RESPUESTAS 1/2
             const ctx = m.message?.extendedTextMessage?.contextInfo;
             const replyTo = ctx?.stanzaId;
+
             const textLow =
               (m.message?.conversation ||
                m.message?.extendedTextMessage?.text ||
@@ -149,10 +164,22 @@ Elige cómo enviarlo:
 
             if (replyTo && pendingTT[replyTo]) {
               const job = pendingTT[replyTo];
+
               if (textLow === "1" || textLow === "2") {
                 const asDoc = textLow === "2";
-                await sendTikTok(conn, job, asDoc, m);
+
+                // ✅ volver a poner: reacción + texto "descargando..."
+                await conn.sendMessage(job.chatId, {
+                  react: { text: asDoc ? "📁" : "🎬", key: m.key }
+                });
+                await conn.sendMessage(job.chatId, {
+                  text: `⏳ Descargando video${asDoc ? " en documento" : ""}…`
+                }, { quoted: job.quotedBase });
+
+                await sendTikTok(conn, job, asDoc);
                 delete pendingTT[replyTo];
+
+                await conn.sendMessage(job.chatId, { react: { text: "✅", key: m.key } });
               } else {
                 await conn.sendMessage(job.chatId, {
                   text: "⚠️ Responde con *1* (video) o *2* (documento), o reacciona con 👍 / ❤️."
@@ -175,16 +202,16 @@ Elige cómo enviarlo:
   }
 };
 
-async function sendTikTok(conn, job, asDocument, triggerMsg){
+// ✅ Envía el archivo según opción (aquí ya NO manda texto/reacción, eso se manda antes)
+async function sendTikTok(conn, job, asDocument){
   const { chatId, url, caption, quotedBase } = job;
-
-  await conn.sendMessage(chatId, { react: { text: asDocument ? "📁" : "🎬", key: triggerMsg.key } });
 
   if (asDocument) {
     await conn.sendMessage(chatId, {
       document: { url },
       mimetype: "video/mp4",
-      fileName: `tiktok-${Date.now()}.mp4`
+      fileName: `tiktok-${Date.now()}.mp4`,
+      caption
     }, { quoted: quotedBase });
   } else {
     await conn.sendMessage(chatId, {
@@ -193,8 +220,6 @@ async function sendTikTok(conn, job, asDocument, triggerMsg){
       caption
     }, { quoted: quotedBase });
   }
-
-  await conn.sendMessage(chatId, { react: { text: "✅", key: triggerMsg.key } });
 }
 
 handler.command = ["tiktok","tt"];
