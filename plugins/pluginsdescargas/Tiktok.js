@@ -2,8 +2,8 @@
 // Usa tu API Sky: https://api-sky.ultraplus.click
 const axios = require("axios");
 
-const API_BASE = process.env.API_BASE || "https://api-sky.ultraplus.click";
-const API_KEY  = process.env.API_KEY  || "Russellxz"; // tu key
+const API_BASE = process.env.API_BASE || "https://api-russell-test.ultraplus.click/tiktok";
+const API_KEY  = process.env.API_KEY  || "sk_732a209b-322a-47b3-8ce0-965aa13a7024"; // tu key
 const MAX_TIMEOUT = 25000;
 
 const fmtSec = (s) => {
