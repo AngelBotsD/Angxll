@@ -3,7 +3,7 @@
 const axios = require("axios");
 
 const API_BASE = process.env.API_BASE || "https://api-russell-test.ultraplus.click";
-const API_KEY  = process.env.API_KEY  || "sk_732a209b-322a-47b3-8ce0-965aa13a7024";
+const API_KEY  = process.env.API_KEY  || "Russellxz";
 const MAX_TIMEOUT = 25000;
 
 const fmtSec = (s) => {
