@@ -18,7 +18,7 @@ const API_KEY = process.env.API_KEY || "Russellxz";
 // Defaults
 const DEFAULT_VIDEO_QUALITY = "360";
 const DEFAULT_AUDIO_FORMAT = "mp3";
-const MAX_MB = 500;
+const MAX_MB = 99;
 
 // Calidades válidas (de tu API)
 const VALID_QUALITIES = new Set(["144", "240", "360", "720", "1080", "1440", "4k"]);
