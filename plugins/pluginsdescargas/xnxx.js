@@ -94,13 +94,14 @@ async function sendVideo(conn, job, asDocument, triggerMsg) {
 
 module.exports = async (msg, { conn, args, command }) => {
   const chatId = msg.key.remoteJid;
-  const pref = global.prefixes?.[0] || ".";
   let text = (args.join(" ") || "").trim();
 
   if (!text) {
     return conn.sendMessage(
       chatId,
-      { text: `✳️ Usa:\n\( {pref} \){command} <enlace>\nEj: \( {pref} \){command} https://www.xnxx.com/video-xxxxx/titulo` },
+      { 
+        text: `✳️ Usa:\n.xnxx <enlace> o .x <enlace>\nEj: .xnxx https://www.xnxx.com/video-xxxxx/titulo` 
+      },
       { quoted: msg }
     );
   }
@@ -108,7 +109,7 @@ module.exports = async (msg, { conn, args, command }) => {
   if (!/^https?:\/\//i.test(text) || !/xnxx\./i.test(text)) {
     return conn.sendMessage(
       chatId,
-      { text: `❌ Enlace inválido.\nUsa: \( {pref} \){command} <url de XNXX>` },
+      { text: `❌ Enlace inválido.\nUsa: .xnxx <url de XNXX> o .x <url de XNXX>` },
       { quoted: msg }
     );
   }
