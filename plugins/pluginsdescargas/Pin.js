@@ -25,7 +25,7 @@ function pickBestImage(it) {
   );
 }
 
-// descarga imagen a buffer (para mandarla por whatsapp)
+// descarga imagen a buffer
 async function downloadImageBuffer(url) {
   const r = await axios.get(url, {
     responseType: "arraybuffer",
@@ -43,12 +43,12 @@ async function downloadImageBuffer(url) {
   return Buffer.from(r.data);
 }
 
-// ✅ Llamada correcta a tu API NUEVA (plugin: /pinterestimg)
+// ✅ Llamada correcta a tu API (plugin: /pinterestimg)
 async function callPinterestImages(q) {
-  const endpoint = `${API_BASE}/pinterestimg`; // ✅ correcto
+  const endpoint = `${API_BASE}/pinterestimg`;
   const r = await axios.post(
     endpoint,
-    { q, limit: LIMIT }, // limit lo mandamos por si luego lo usas; tu API puede ignorarlo
+    { q, limit: LIMIT },
     {
       headers: {
         "Content-Type": "application/json",
@@ -60,35 +60,31 @@ async function callPinterestImages(q) {
     }
   );
 
-  // Si vino string (HTML/texto), intentamos parsear JSON
   let data = r.data;
   if (typeof data === "string") {
     const t = data.trim();
-    try {
-      data = JSON.parse(t);
-    } catch {
-      // HTML / texto
-      throw new Error(`Respuesta no JSON del servidor (HTTP ${r.status})`);
-    }
+    try { data = JSON.parse(t); }
+    catch { throw new Error(`Respuesta no JSON del servidor (HTTP ${r.status})`); }
   }
 
-  if (!data || typeof data !== "object") {
-    throw new Error(`API inválida (HTTP ${r.status})`);
+  if (!data || typeof data !== "object") throw new Error(`API inválida (HTTP ${r.status})`);
+
+  const ok = data.status === true || data.status === "true" || data.ok === true || data.success === true;
+  if (!ok) throw new Error(data.message || data.error || `Error en API (HTTP ${r.status})`);
+
+  return data.result || data.data || data;
+}
+
+// ✅ intento de envío en álbum (si Baileys lo soporta)
+async function sendAlbum(conn, chatId, albumItems, quoted) {
+  // albumItems: [{ image: Buffer, caption?: string }, ...]
+  try {
+    // Baileys recientes soportan { album: [...] }
+    await conn.sendMessage(chatId, { album: albumItems }, { quoted });
+    return true;
+  } catch (e) {
+    return false;
   }
-
-  const ok =
-    data.status === true ||
-    data.status === "true" ||
-    data.ok === true ||
-    data.success === true;
-
-  if (!ok) {
-    throw new Error(data.message || data.error || `Error en API (HTTP ${r.status})`);
-  }
-
-  // tu API devuelve { status:true, result:{ ... } }
-  const payload = data.result || data.data || data;
-  return payload;
 }
 
 // ---- command ----
@@ -105,7 +101,7 @@ module.exports = async (msg, { conn, text }) => {
     );
   }
 
-  // ✅ Solo búsqueda por texto (como pediste)
+  // ✅ solo búsqueda por texto
   if (looksLikeUrl(input)) {
     return conn.sendMessage(
       chatId,
@@ -114,13 +110,11 @@ module.exports = async (msg, { conn, text }) => {
     );
   }
 
-  // reaccion inicio
   await conn.sendMessage(chatId, { react: { text: "⏳", key: msg.key } });
 
   try {
     const result = await callPinterestImages(input);
 
-    // Tu API: result.results (array)
     const raw = Array.isArray(result?.results) ? result.results : Array.isArray(result) ? result : [];
     const images = raw.slice(0, LIMIT);
 
@@ -135,30 +129,49 @@ module.exports = async (msg, { conn, text }) => {
         text:
           `📌 Pinterest resultados: *${images.length}*\n` +
           `🔎 Búsqueda: *${input}*\n` +
-          `📤 Enviando las primeras ${images.length} imágenes...`,
+          `📤 Enviando en álbum...`,
       },
       { quoted: msg }
     );
 
+    // 1) Descargamos buffers
+    const albumItems = [];
     for (let i = 0; i < images.length; i++) {
       const it = images[i];
       const url = pickBestImage(it);
       if (!url) continue;
 
-      await conn.sendMessage(chatId, { react: { text: "🖼️", key: msg.key } });
-
       try {
         const buf = await downloadImageBuffer(url);
+
+        // Tip: normalmente WhatsApp solo muestra caption en la primera imagen del álbum
+        albumItems.push({
+          image: buf,
+          caption: i === 0 ? `📌 Pinterest: ${input}\n(${images.length} imágenes)` : undefined,
+        });
+      } catch {
+        // si una falla, la saltamos (para no romper el álbum completo)
+      }
+    }
+
+    if (!albumItems.length) {
+      await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
+      return conn.sendMessage(chatId, { text: "❌ No pude descargar imágenes." }, { quoted: msg });
+    }
+
+    // 2) Intentar enviar como álbum
+    await conn.sendMessage(chatId, { react: { text: "🖼️", key: msg.key } });
+
+    const okAlbum = await sendAlbum(conn, chatId, albumItems, msg);
+
+    // 3) Fallback: si no soporta álbum, mandar una por una
+    if (!okAlbum) {
+      await conn.sendMessage(chatId, { text: "⚠️ Tu Baileys no soporta álbum. Enviando normal..." }, { quoted: msg });
+
+      for (let i = 0; i < albumItems.length; i++) {
         await conn.sendMessage(
           chatId,
-          { image: buf, caption: `(${i + 1}/${images.length}) ${it.title || "Pinterest"}` },
-          { quoted: msg }
-        );
-      } catch (e) {
-        // fallback: manda URL si falla buffer
-        await conn.sendMessage(
-          chatId,
-          { text: `(${i + 1}/${images.length}) ${it.title || "Pinterest"}\n${url}` },
+          { image: albumItems[i].image, caption: `(${i + 1}/${albumItems.length}) Pinterest: ${input}` },
           { quoted: msg }
         );
       }
