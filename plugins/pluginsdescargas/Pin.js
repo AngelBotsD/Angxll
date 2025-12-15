@@ -1,13 +1,13 @@
-
 "use strict";
 
 const axios = require("axios");
 
-// ✅ IMPORTANTE: para álbum en Baileys
-const {
-  generateWAMessageFromContent,
-  generateWAMessage,
-} = require("@whiskeysockets/baileys");
+// === Carga ESM-safe de Baileys ===
+let _baileysMod = null;
+async function getBaileys() {
+  if (!_baileysMod) _baileysMod = await import("@whiskeysockets/baileys");
+  return _baileysMod;
+}
 
 // ==== CONFIG API ====
 const API_BASE = (process.env.API_BASE || "https://api-sky-test.ultraplus.click").replace(/\/+$/, "");
@@ -45,7 +45,6 @@ async function downloadImageBuffer(url) {
 }
 
 async function callPinterestImages(q, limit = LIMIT) {
-  // ⚠️ Ajusta si tu endpoint real es otro
   const endpoint = `${API_BASE}/pinterest-images`;
 
   const r = await axios.get(endpoint, {
@@ -57,7 +56,6 @@ async function callPinterestImages(q, limit = LIMIT) {
 
   let data = r.data;
 
-  // si viene texto → intenta parsear
   if (typeof data === "string") {
     try { data = JSON.parse(data.trim()); }
     catch { throw new Error("Respuesta no JSON del servidor"); }
@@ -76,9 +74,11 @@ async function callPinterestImages(q, limit = LIMIT) {
   return data.result || data.data || data;
 }
 
-// ✅ TU LÓGICA DE ÁLBUM (misma que te pasó tu amigo)
-function ensureAlbumSupport(conn) {
+// ✅ TU LÓGICA DE ÁLBUM — ahora usando import dinámico
+async function ensureAlbumSupport(conn) {
   if (typeof conn.sendAlbumMessage === "function") return;
+
+  const { generateWAMessageFromContent, generateWAMessage } = await getBaileys();
 
   conn.sendAlbumMessage = async function (jid, medias = [], caption = "", quoted = null) {
     if (!Array.isArray(medias) || medias.length === 0) {
@@ -111,7 +111,6 @@ function ensureAlbumSupport(conn) {
       const mediaPayload = {};
       mediaPayload[type] = data;
 
-      // ✅ caption SOLO en el primero (y aquí lo mandamos vacío)
       if (i === 0 && caption) {
         mediaPayload.caption = caption;
       }
@@ -150,16 +149,13 @@ module.exports = async (msg, { conn, text }) => {
     );
   }
 
-  // ✅ reacciona inicio
   await conn.sendMessage(chatId, { react: { text: "⏳", key: msg.key } });
 
   try {
-    ensureAlbumSupport(conn);
+    await ensureAlbumSupport(conn);
 
-    // 🔎 búsqueda -> pedir top 10 a tu API
     const result = await callPinterestImages(input, LIMIT);
 
-    // soporta: result.results o result array
     const arr = Array.isArray(result?.results) ? result.results : (Array.isArray(result) ? result : []);
     const items = arr.slice(0, LIMIT);
 
@@ -168,25 +164,22 @@ module.exports = async (msg, { conn, text }) => {
       return conn.sendMessage(chatId, { text: "❌ No encontré imágenes." }, { quoted: msg });
     }
 
-    // Mensaje info (esto sí se queda)
     await conn.sendMessage(chatId, {
       text: `📌 Pinterest resultados: *${items.length}*\n🔎 Búsqueda: *${input}*\n📸 Enviando en álbum...`,
     }, { quoted: msg });
 
-    // Descargar buffers
     const medias = [];
     for (let i = 0; i < items.length; i++) {
       const url = pickBestImage(items[i]);
       if (!url) continue;
 
-      // reacciona mientras descarga
       await conn.sendMessage(chatId, { react: { text: "🖼️", key: msg.key } });
 
       try {
         const buf = await downloadImageBuffer(url);
         medias.push({ type: "image", data: buf });
       } catch {
-        // si una falla, la saltamos (para no romper el álbum)
+        // saltar fallidas
       }
     }
 
@@ -195,11 +188,9 @@ module.exports = async (msg, { conn, text }) => {
       return conn.sendMessage(chatId, { text: "❌ No pude descargar ninguna imagen." }, { quoted: msg });
     }
 
-    // ✅ Enviar álbum SIN caption por imagen (caption = "")
     try {
       await conn.sendAlbumMessage(chatId, medias, "", msg);
     } catch (e) {
-      // fallback: si tu baileys realmente no lo soporta, manda 1x1 SIN caption
       for (const m of medias) {
         await conn.sendMessage(chatId, { image: m.data }, { quoted: msg });
       }
