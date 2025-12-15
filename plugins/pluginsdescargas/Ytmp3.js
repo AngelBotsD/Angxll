@@ -422,7 +422,7 @@ module.exports = async (msg, { conn, text, command }) => {
   }
 };
 
-module.exports.command = ["yt", "yta", "ytv", "ytmp4"];
+module.exports.command = ["yt", "yta", "ytv", "ytmp3"];
 module.exports.help = ["yt <url> [calidad]"];
 module.exports.tags = ["descargas"];
 module.exports.register = true;
