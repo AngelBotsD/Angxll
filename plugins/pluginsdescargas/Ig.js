@@ -1,21 +1,23 @@
+
 // ig.js — Instagram con opciones (👍 video / ❤️ documento o 1 / 2)
-// Usa tu API Sky: https://api-sky.ultraplus.click
+// ✅ API NUEVA: POST /instagram  +  GET /instagram/dl
+"use strict";
+
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 
-const API_BASE = "https://api-sky.ultraplus.click";
-const SKY_API_KEY = "Russellxz";    // <-- tu API key
-const MAX_MB = 99;                  // límite de envío recomendado por WhatsApp
+const API_BASE = (process.env.API_BASE || "https://api-sky-test.ultraplus.click").replace(/\/+$/, "");
+const SKY_API_KEY = process.env.API_KEY || "Russellxz";
+const MAX_MB = 99; // WhatsApp recomendado
 
-// memoria de trabajos pendientes por mensaje de preview
 const pendingIG = Object.create(null);
 
-const isIG = (u="") => /(instagram\.com|instagr\.am)/i.test(u);
-const mb = n => n / (1024 * 1024);
+const isIG = (u = "") => /(instagram\.com|instagr\.am)/i.test(u);
+const mb = (n) => n / (1024 * 1024);
 
 function extFromCT(ct = "", def = "bin") {
-  const c = ct.toLowerCase();
+  const c = String(ct || "").toLowerCase();
   if (c.includes("mp4")) return "mp4";
   if (c.includes("jpeg")) return "jpg";
   if (c.includes("jpg")) return "jpg";
@@ -24,47 +26,128 @@ function extFromCT(ct = "", def = "bin") {
   return def;
 }
 
-// Llama a tu API Sky (JS + fallback PHP)
-async function callSkyInstagram(url) {
-  const headers = { Authorization: `Bearer ${SKY_API_KEY}` };
-  try {
-    const r = await axios.get(`${API_BASE}/api/download/instagram`, {
-      params: { url }, headers, timeout: 30000
-    });
-    if ((r.data?.status === "true" || r.data?.status === true) && r.data?.data?.media?.length) {
-      return r.data.data;
-    }
-    throw new Error(r.data?.error || "no_media");
-  } catch (e) {
-    // fallback PHP si el .js no está disponible
-    const r2 = await axios.get(`${API_BASE}/api/download/instagram.php`, {
-      params: { url }, headers, timeout: 30000, validateStatus: s => s < 600
-    });
-    if ((r2.data?.status === "true" || r2.data?.status === true) && r2.data?.data?.media?.length) {
-      return r2.data.data;
-    }
-    const msg = r2.data?.error || `HTTP ${r2.status}`;
-    throw new Error(msg);
-  }
+function safeFileName(name = "instagram") {
+  return String(name || "instagram")
+    .slice(0, 70)
+    .replace(/[^A-Za-z0-9_\-.]+/g, "_") || "instagram";
 }
 
-async function downloadToTmp(fileUrl, preferExt = "bin") {
+// ✅ Normaliza media venga como venga
+function normalizeMediaList(result) {
+  const r = result || {};
+  const media =
+    r.media ||
+    r.medias ||
+    r.items ||
+    r.results ||
+    r.data?.media ||
+    r.result?.media ||
+    [];
+
+  if (!Array.isArray(media)) return [];
+
+  return media
+    .map((it) => {
+      if (!it) return null;
+
+      // si viene string directo
+      if (typeof it === "string") {
+        return { type: "video", url: it };
+      }
+
+      const type = String(it.type || it.kind || it.media_type || "").toLowerCase();
+      const url =
+        it.url ||
+        it.downloadUrl ||
+        it.download_url ||
+        it.link ||
+        it.src ||
+        it.media ||
+        it.video ||
+        it.image ||
+        "";
+
+      if (!url) return null;
+
+      // adivina tipo si no viene
+      let t = type;
+      if (!t) {
+        t = /\.mp4(\?|#|$)/i.test(url) ? "video" : "image";
+      }
+
+      return { type: t, url: String(url) };
+    })
+    .filter(Boolean);
+}
+
+// ✅ Llama a API nueva
+async function callSkyInstagram(url) {
+  const endpoint = `${API_BASE}/instagram`;
+
+  const r = await axios.post(
+    endpoint,
+    { url },
+    {
+      timeout: 60000,
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json,*/*",
+        apikey: SKY_API_KEY,
+        // Authorization: `Bearer ${SKY_API_KEY}`, // si prefieres bearer
+      },
+      validateStatus: () => true,
+    }
+  );
+
+  let data = r.data;
+
+  // por si viene texto
+  if (typeof data === "string") {
+    try { data = JSON.parse(data.trim()); }
+    catch { throw new Error("Respuesta no JSON del servidor"); }
+  }
+
+  if (!data || typeof data !== "object") throw new Error("Respuesta no JSON del servidor");
+
+  const ok =
+    data.status === true ||
+    data.status === "true" ||
+    data.ok === true ||
+    data.success === true;
+
+  if (!ok) throw new Error(data.message || data.error || `HTTP ${r.status}`);
+
+  return data.result || data.data || data;
+}
+
+// ✅ descarga usando el proxy /instagram/dl (mejor que ir directo al CDN)
+async function downloadToTmpFromProxy(type, srcUrl, filenameBase = "instagram") {
   const tmp = path.resolve("./tmp");
   if (!fs.existsSync(tmp)) fs.mkdirSync(tmp, { recursive: true });
 
-  const res = await axios.get(fileUrl, {
+  const fname = safeFileName(filenameBase) + (type === "video" ? ".mp4" : ".jpg");
+
+  const dlUrl =
+    `${API_BASE}/instagram/dl` +
+    `?type=${encodeURIComponent(type)}` +
+    `&src=${encodeURIComponent(srcUrl)}` +
+    `&filename=${encodeURIComponent(fname)}` +
+    `&download=1`;
+
+  const res = await axios.get(dlUrl, {
     responseType: "stream",
-    timeout: 120000,
+    timeout: 180000,
     headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-      Referer: "https://www.instagram.com/",
+      apikey: SKY_API_KEY,
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
       Accept: "*/*",
     },
     maxRedirects: 5,
-    validateStatus: s => s < 400 // si 403/404, que arroje error
+    validateStatus: (s) => s < 400,
   });
 
-  const ext = extFromCT(res.headers["content-type"], preferExt);
+  const ext = extFromCT(res.headers["content-type"], type === "video" ? "mp4" : "jpg");
   const filePath = path.join(tmp, `ig-${Date.now()}-${Math.floor(Math.random() * 1e5)}.${ext}`);
 
   await new Promise((resolve, reject) => {
@@ -81,22 +164,28 @@ async function sendVideo(conn, chatId, filePath, asDocument, quoted, extraCaptio
   const sizeMB = mb(fs.statSync(filePath).size);
   if (sizeMB > MAX_MB) {
     try { fs.unlinkSync(filePath); } catch {}
-    return conn.sendMessage(chatId, {
-      text: `❌ 𝙑𝙞𝙙𝙚𝙤 ≈ ${sizeMB.toFixed(2)} MB — supera el límite de ${MAX_MB} MB.\nTip: prueba como documento (a veces permite un poco más).`
-    }, { quoted });
+    return conn.sendMessage(
+      chatId,
+      { text: `❌ Video ≈ ${sizeMB.toFixed(2)} MB — supera el límite de ${MAX_MB} MB.` },
+      { quoted }
+    );
   }
 
   const caption =
-`⚡ 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 — 𝘃𝗶𝗱𝗲𝗼 𝗹𝗶𝘀𝘁𝗼
-✦ 𝗦𝗼𝘂𝗿𝗰𝗲: api-sky.ultraplus.click
+`⚡ Instagram — listo
+✦ Source: api-sky-test.ultraplus.click
 ${extraCaption || ""}`.trim();
 
-  await conn.sendMessage(chatId, {
-    [asDocument ? "document" : "video"]: fs.readFileSync(filePath),
-    mimetype: "video/mp4",
-    fileName: `instagram-${Date.now()}.mp4`,
-    caption: asDocument ? undefined : caption
-  }, { quoted });
+  await conn.sendMessage(
+    chatId,
+    {
+      [asDocument ? "document" : "video"]: fs.readFileSync(filePath),
+      mimetype: "video/mp4",
+      fileName: `instagram-${Date.now()}.mp4`,
+      caption: asDocument ? undefined : caption,
+    },
+    { quoted }
+  );
 
   try { fs.unlinkSync(filePath); } catch {}
 }
@@ -107,67 +196,89 @@ module.exports = async (msg, { conn, args, command }) => {
   const pref = global.prefixes?.[0] || ".";
 
   if (!text) {
-    return conn.sendMessage(chatId, {
-      text:
-`✳️ 𝙐𝙨𝙖:
+    return conn.sendMessage(
+      chatId,
+      {
+        text:
+`✳️ Usa:
 ${pref}${command} <enlace IG>
 Ej: ${pref}${command} https://www.instagram.com/reel/DPO9MwWjjY_/`
-    }, { quoted: msg });
+      },
+      { quoted: msg }
+    );
   }
 
   if (!isIG(text)) {
-    return conn.sendMessage(chatId, {
-      text:
-`❌ 𝙀𝙣𝙡𝙖𝙘𝙚 𝙞𝙣𝙫𝙖́𝙡𝙞𝙙𝙤.
+    return conn.sendMessage(
+      chatId,
+      {
+        text:
+`❌ Enlace IG inválido.
 
-✳️ 𝙐𝙨𝙖:
+✳️ Usa:
 ${pref}${command} <enlace IG>`
-    }, { quoted: msg });
+      },
+      { quoted: msg }
+    );
   }
 
   try {
     await conn.sendMessage(chatId, { react: { text: "⏳", key: msg.key } });
 
-    // 1) Pide a tu API → solo tomaremos el PRIMER video
-    const data  = await callSkyInstagram(text);
-    const media = Array.isArray(data.media) ? data.media : [];
-    const firstVideo = media.find(it => String(it.type || "").toLowerCase() === "video");
+    // 1) API nueva
+    const result = await callSkyInstagram(text);
+    const mediaList = normalizeMediaList(result);
+
+    const firstVideo =
+      mediaList.find((it) => String(it.type).includes("video")) ||
+      mediaList.find((it) => /\.mp4(\?|#|$)/i.test(it.url)) ||
+      null;
 
     if (!firstVideo) {
-      return conn.sendMessage(chatId, {
-        text: "🚫 𝙀𝙨𝙚 𝙚𝙣𝙡𝙖𝙘𝙚 𝙣𝙤 𝙩𝙞𝙚𝙣𝙚 𝙫𝙞𝙙𝙚𝙤 𝙙𝙚𝙨𝙘𝙖𝙧𝙜𝙖𝙗𝙡𝙚."
-      }, { quoted: msg });
+      await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
+      return conn.sendMessage(
+        chatId,
+        { text: "🚫 Ese enlace no tiene video descargable." },
+        { quoted: msg }
+      );
     }
 
-    // 2) Mensaje de opciones (reacciones / números)
+    // 2) opciones
+    const author =
+      result.author ||
+      result.username ||
+      result.user?.username ||
+      result.creator?.username ||
+      "";
+
     const txt =
-`⚡ 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 — 𝗼𝗽𝗰𝗶𝗼𝗻𝗲𝘀
+`⚡ Instagram — opciones
 
 Elige cómo enviarlo:
-👍 𝗩𝗶𝗱𝗲𝗼 (normal)
-❤️ 𝗩𝗶𝗱𝗲𝗼 𝗰𝗼𝗺𝗼 𝗱𝗼𝗰𝘂𝗺𝗲𝗻𝘁𝗼
-— 𝗼 responde: 1 = video · 2 = documento
+👍 Video (normal)
+❤️ Video como documento
+— o responde: 1 = video · 2 = documento
 
-✦ 𝗔𝘂𝘁𝗼𝗿: ${data.author ? '@' + data.author : 'desconocido'}
-✦ 𝗦𝗼𝘂𝗿𝗰𝗲: api-sky.ultraplus.click
+✦ Autor: ${author ? "@" + author : "desconocido"}
+✦ Source: api-sky-test.ultraplus.click
 ────────────
-🤖 𝙎𝙪𝙠𝙞 𝘽𝙤𝙩`;
+🤖 Suki Bot`;
 
     const preview = await conn.sendMessage(chatId, { text: txt }, { quoted: msg });
 
-    // guarda el trabajo pendiente
     pendingIG[preview.key.id] = {
       chatId,
-      url: firstVideo.url,
-      quotedBase: msg
+      srcUrl: firstVideo.url,
+      quotedBase: msg,
+      nameBase: "instagram",
     };
 
     await conn.sendMessage(chatId, { react: { text: "✅", key: msg.key } });
 
-    // listener único para IG
     if (!conn._igListener) {
       conn._igListener = true;
-      conn.ev.on("messages.upsert", async ev => {
+
+      conn.ev.on("messages.upsert", async (ev) => {
         for (const m of ev.messages) {
           try {
             // REACCIONES
@@ -177,36 +288,41 @@ Elige cómo enviarlo:
               if (job) {
                 const asDoc = emoji === "❤️";
                 await conn.sendMessage(job.chatId, { react: { text: asDoc ? "📁" : "🎬", key: m.key } });
-                await conn.sendMessage(job.chatId, { text: `⏳ Descargando ${asDoc ? "como documento" : "video"}…` }, { quoted: job.quotedBase });
+                await conn.sendMessage(job.chatId, { text: `⏳ Descargando…` }, { quoted: job.quotedBase });
 
-                const { path: fpath } = await downloadToTmp(job.url, "mp4");
+                const { path: fpath } = await downloadToTmpFromProxy("video", job.srcUrl, job.nameBase);
                 await sendVideo(conn, job.chatId, fpath, asDoc, job.quotedBase);
+
                 delete pendingIG[reactKey.id];
               }
             }
 
-            // RESPUESTAS con número 1/2
+            // RESPUESTA 1/2
             const ctx = m.message?.extendedTextMessage?.contextInfo;
             const replyTo = ctx?.stanzaId;
             const textLow =
               (m.message?.conversation ||
-               m.message?.extendedTextMessage?.text ||
-               "").trim().toLowerCase();
+                m.message?.extendedTextMessage?.text ||
+                "").trim().toLowerCase();
 
             if (replyTo && pendingIG[replyTo]) {
               const job = pendingIG[replyTo];
+
               if (textLow === "1" || textLow === "2") {
                 const asDoc = textLow === "2";
                 await conn.sendMessage(job.chatId, { react: { text: asDoc ? "📁" : "🎬", key: m.key } });
-                await conn.sendMessage(job.chatId, { text: `⏳ Descargando ${asDoc ? "como documento" : "video"}…` }, { quoted: job.quotedBase });
+                await conn.sendMessage(job.chatId, { text: `⏳ Descargando…` }, { quoted: job.quotedBase });
 
-                const { path: fpath } = await downloadToTmp(job.url, "mp4");
+                const { path: fpath } = await downloadToTmpFromProxy("video", job.srcUrl, job.nameBase);
                 await sendVideo(conn, job.chatId, fpath, asDoc, job.quotedBase);
+
                 delete pendingIG[replyTo];
               } else {
-                await conn.sendMessage(job.chatId, {
-                  text: "⚠️ Responde con *1* (video) o *2* (documento), o reacciona con 👍 / ❤️.",
-                }, { quoted: job.quotedBase });
+                await conn.sendMessage(
+                  job.chatId,
+                  { text: "⚠️ Responde con *1* (video) o *2* (documento), o reacciona con 👍 / ❤️." },
+                  { quoted: job.quotedBase }
+                );
               }
             }
           } catch (e) {
@@ -215,21 +331,23 @@ Elige cómo enviarlo:
         }
       });
     }
-
   } catch (err) {
-    console.error("❌ Error IG Sky:", err?.message || err);
+    console.error("❌ Error IG:", err?.message || err);
+
     let msgTxt = "❌ Error al procesar el enlace.";
     const s = String(err?.message || "");
-    if (/missing_param|invalid/i.test(s)) msgTxt = "❌ URL inválida o faltante.";
-    else if (/no_media|no_video|422/i.test(s)) msgTxt = "🚫 No se encontró un video descargable en ese enlace.";
-    else if (/401|api key|unauthorized|forbidden/i.test(s)) msgTxt = "🔐 API Key inválida o ausente en api-sky.ultraplus.click.";
-    else if (/timeout|timed out|aborted|502|upstream/i.test(s)) msgTxt = "⚠️ La upstream tardó demasiado o no respondió.";
+
+    if (/invalid|falt|missing/i.test(s)) msgTxt = "❌ URL inválida o faltante.";
+    else if (/no_media|no_video/i.test(s)) msgTxt = "🚫 No se encontró un video descargable en ese enlace.";
+    else if (/401|api key|unauthorized|forbidden/i.test(s)) msgTxt = "🔐 API Key inválida o ausente.";
+    else if (/timeout|timed out|502|upstream/i.test(s)) msgTxt = "⚠️ La upstream tardó demasiado o no respondió.";
+
     await conn.sendMessage(chatId, { text: msgTxt }, { quoted: msg });
     await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
   }
 };
 
-module.exports.command = ["instagram","ig"];
+module.exports.command = ["instagram", "ig"];
 module.exports.help = ["instagram <url>", "ig <url>"];
 module.exports.tags = ["descargas"];
 module.exports.register = true;
