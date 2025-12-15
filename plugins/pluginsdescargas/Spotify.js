@@ -99,7 +99,7 @@ module.exports = async (msg, { conn, args, command }) => {
     return conn.sendMessage(
       chatId,
       { 
-        text: `✳️ Usa:\n\( {pref}spotify <canción o URL>\no\n \){pref}sp <canción o URL>\n\nEjemplo:\n${pref}sp bad bunny tití me preguntó` 
+        text: `✳️ Usa:\n\ .sp <canción o URL>\n\nEjemplo:\n${pref}sp bad bunny tití me preguntó` 
       },
       { quoted: msg }
     );
