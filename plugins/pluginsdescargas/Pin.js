@@ -1,20 +1,24 @@
+
+// commands/pinterestimg.js
 "use strict";
 
 const axios = require("axios");
 
-// === Carga ESM-safe de Baileys ===
-let _baileysMod = null;
-async function getBaileys() {
-  if (!_baileysMod) _baileysMod = await import("@whiskeysockets/baileys");
-  return _baileysMod;
-}
-
 // ==== CONFIG API ====
 const API_BASE = (process.env.API_BASE || "https://api-sky-test.ultraplus.click").replace(/\/+$/, "");
 const API_KEY  = process.env.API_KEY  || "Russellxz";
+
 const LIMIT = 10;
 
 // ---- helpers ----
+function isUrl(s = "") {
+  return /^https?:\/\//i.test(String(s || ""));
+}
+function isImageUrl(u = "") {
+  u = String(u || "");
+  return /^https?:\/\//i.test(u) && /\.(png|jpe?g|webp|gif)(\?|#|$)/i.test(u);
+}
+
 function pickBestImage(it) {
   return (
     it?.image_medium_url ||
@@ -45,6 +49,7 @@ async function downloadImageBuffer(url) {
 }
 
 async function callPinterestImages(q, limit = LIMIT) {
+  // ⬇️ Ajusta este endpoint si tu API usa otro
   const endpoint = `${API_BASE}/pinterest-images`;
 
   const r = await axios.get(endpoint, {
@@ -56,6 +61,7 @@ async function callPinterestImages(q, limit = LIMIT) {
 
   let data = r.data;
 
+  // Si viene string, intentar parsear
   if (typeof data === "string") {
     try { data = JSON.parse(data.trim()); }
     catch { throw new Error("Respuesta no JSON del servidor"); }
@@ -74,67 +80,6 @@ async function callPinterestImages(q, limit = LIMIT) {
   return data.result || data.data || data;
 }
 
-// ✅ TU LÓGICA DE ÁLBUM — ahora usando import dinámico
-async function ensureAlbumSupport(conn) {
-  if (typeof conn.sendAlbumMessage === "function") return;
-
-  const { generateWAMessageFromContent, generateWAMessage } = await getBaileys();
-
-  conn.sendAlbumMessage = async function (jid, medias = [], caption = "", quoted = null) {
-    if (!Array.isArray(medias) || medias.length === 0) {
-      throw new Error("No se proporcionaron medios válidos.");
-    }
-
-    const album = generateWAMessageFromContent(jid, {
-      albumMessage: {
-        expectedImageCount: medias.filter(media => media.type === "image").length,
-        expectedVideoCount: medias.filter(media => media.type === "video").length,
-        ...(quoted ? {
-          contextInfo: {
-            remoteJid: quoted.key.remoteJid,
-            fromMe: quoted.key.fromMe,
-            stanzaId: quoted.key.id,
-            participant: quoted.key.participant || quoted.key.remoteJid,
-            quotedMessage: quoted.message
-          }
-        } : {})
-      }
-    }, { quoted });
-
-    await this.relayMessage(album.key.remoteJid, album.message, {
-      messageId: album.key.id
-    });
-
-    for (let i = 0; i < medias.length; i++) {
-      const { type, data } = medias[i];
-
-      const mediaPayload = {};
-      mediaPayload[type] = data;
-
-      if (i === 0 && caption) {
-        mediaPayload.caption = caption;
-      }
-
-      const mediaMessage = await generateWAMessage(album.key.remoteJid, mediaPayload, {
-        upload: this.waUploadToServer
-      });
-
-      mediaMessage.message.messageContextInfo = {
-        messageAssociation: {
-          associationType: 1,
-          parentMessageKey: album.key
-        }
-      };
-
-      await this.relayMessage(mediaMessage.key.remoteJid, mediaMessage.message, {
-        messageId: mediaMessage.key.id
-      });
-    }
-
-    return album;
-  };
-}
-
 // ---- command ----
 module.exports = async (msg, { conn, text }) => {
   const chatId = msg.key.remoteJid;
@@ -144,55 +89,56 @@ module.exports = async (msg, { conn, text }) => {
   if (!input) {
     return conn.sendMessage(
       chatId,
-      { text: `🖼️ Usa:\n${pref}pinterestimg <búsqueda>\nEj: ${pref}pinterestimg gatos anime` },
+      { text: `🖼️ Usa:\n${pref}pinterestimg <búsqueda|link_imagen>\nEj: ${pref}pinterestimg gatos anime` },
       { quoted: msg }
     );
   }
 
+  // reaccion inicio
   await conn.sendMessage(chatId, { react: { text: "⏳", key: msg.key } });
 
   try {
-    await ensureAlbumSupport(conn);
+    // ✅ Si es URL directa de imagen -> mandar 1 (SIN caption)
+    if (isUrl(input) && isImageUrl(input)) {
+      await conn.sendMessage(chatId, { react: { text: "🖼️", key: msg.key } });
 
+      const buf = await downloadImageBuffer(input);
+      await conn.sendMessage(chatId, { image: buf }, { quoted: msg }); // 👈 sin caption
+
+      await conn.sendMessage(chatId, { react: { text: "✅", key: msg.key } });
+      return;
+    }
+
+    // 🔎 búsqueda -> pedir top 10 a tu API
     const result = await callPinterestImages(input, LIMIT);
 
+    // Soporta: result.results o result directo array
     const arr = Array.isArray(result?.results) ? result.results : (Array.isArray(result) ? result : []);
-    const items = arr.slice(0, LIMIT);
+    const images = arr.slice(0, LIMIT);
 
-    if (!items.length) {
+    if (!images.length) {
       await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
       return conn.sendMessage(chatId, { text: "❌ No encontré imágenes." }, { quoted: msg });
     }
 
     await conn.sendMessage(chatId, {
-      text: `📌 Pinterest resultados: *${items.length}*\n🔎 Búsqueda: *${input}*\n📸 Enviando en álbum...`,
+      text: `📌 Pinterest resultados: *${images.length}*\n🔎 Búsqueda: *${input}*`,
     }, { quoted: msg });
 
-    const medias = [];
-    for (let i = 0; i < items.length; i++) {
-      const url = pickBestImage(items[i]);
+    // mandar las 10 primeras (una por una) SIN DESCRIPCIÓN por imagen
+    for (let i = 0; i < images.length; i++) {
+      const it = images[i];
+      const url = pickBestImage(it);
       if (!url) continue;
 
       await conn.sendMessage(chatId, { react: { text: "🖼️", key: msg.key } });
 
       try {
         const buf = await downloadImageBuffer(url);
-        medias.push({ type: "image", data: buf });
+        await conn.sendMessage(chatId, { image: buf }, { quoted: msg }); // 👈 sin caption
       } catch {
-        // saltar fallidas
-      }
-    }
-
-    if (!medias.length) {
-      await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
-      return conn.sendMessage(chatId, { text: "❌ No pude descargar ninguna imagen." }, { quoted: msg });
-    }
-
-    try {
-      await conn.sendAlbumMessage(chatId, medias, "", msg);
-    } catch (e) {
-      for (const m of medias) {
-        await conn.sendMessage(chatId, { image: m.data }, { quoted: msg });
+        // fallback: si falla buffer, manda URL (solo si quieres; si no, lo quito también)
+        await conn.sendMessage(chatId, { text: url }, { quoted: msg });
       }
     }
 
