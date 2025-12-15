@@ -1,4 +1,4 @@
-// ig.js — Instagram (👍 video / ❤️ documento o 1 / 2) — API NUEVA + fallback imagen
+// ig.js — Instagram SOLO VIDEO (👍 normal / ❤️ documento o 1/2) — API NUEVA
 "use strict";
 
 const axios = require("axios");
@@ -16,21 +16,15 @@ const mb = (n) => n / (1024 * 1024);
 function isIG(u = "") {
   return /(instagram\.com|instagr\.am)/i.test(String(u || ""));
 }
-
 function isUrl(u = "") {
   return /^https?:\/\//i.test(String(u || ""));
 }
 
-function isImageUrl(u = "") {
-  u = String(u || "");
-  return isUrl(u) && /\.(png|jpe?g|webp|gif)(\?|#|$)/i.test(u);
-}
-
 function normalizeIGUrl(input = "") {
   let u = String(input || "").trim();
-  u = u.replace(/^<|>$/g, "").trim(); // por si lo pegan con < >
+  u = u.replace(/^<|>$/g, "").trim();
 
-  // si viene sin protocolo, pon https
+  // si viene sin protocolo
   if (/^(www\.)?instagram\.com\//i.test(u) || /^instagr\.am\//i.test(u)) {
     u = "https://" + u.replace(/^\/+/, "");
   }
@@ -45,7 +39,13 @@ function safeFileName(name = "instagram") {
   );
 }
 
-// ✅ LLAMADA API NUEVA (POST /instagram)
+async function setReaction(conn, chatId, key, emoji) {
+  try {
+    await conn.sendMessage(chatId, { react: { text: emoji, key } });
+  } catch {}
+}
+
+// ✅ API NUEVA (POST /instagram)
 async function callSkyInstagram(url) {
   const endpoint = `${API_BASE}/instagram`;
 
@@ -85,37 +85,28 @@ function extractItems(result) {
 }
 
 function pickFirstVideo(items) {
+  // 1) por type
   let v = items.find((it) => String(it?.type || "").toLowerCase() === "video" && it?.url);
-  if (v) return { type: "video", url: String(v.url) };
+  if (v?.url) return String(v.url);
 
+  // 2) por extensión
   v = items.find((it) => /\.mp4(\?|#|$)/i.test(String(it?.url || "")));
-  if (v?.url) return { type: "video", url: String(v.url) };
-
-  return null;
-}
-
-function pickFirstImage(items) {
-  let im = items.find((it) => String(it?.type || "").toLowerCase() === "image" && it?.url);
-  if (im) return { type: "image", url: String(im.url) };
-
-  im = items.find((it) => /(\.jpg|\.jpeg|\.png|\.webp)(\?|#|$)/i.test(String(it?.url || "")));
-  if (im?.url) return { type: "image", url: String(im.url) };
+  if (v?.url) return String(v.url);
 
   return null;
 }
 
 // ✅ descargar usando /instagram/dl (con apikey)
-async function downloadToTmpFromProxy(type, srcUrl, filenameBase = "instagram") {
+async function downloadVideoToTmpFromProxy(srcUrl, filenameBase = "instagram") {
   const tmp = path.resolve("./tmp");
   if (!fs.existsSync(tmp)) fs.mkdirSync(tmp, { recursive: true });
 
   const base = safeFileName(filenameBase);
-  const ext = type === "video" ? "mp4" : type === "image" ? "jpg" : "bin";
-  const fname = `${base}.${ext}`;
+  const fname = `${base}.mp4`;
 
   const dlUrl =
     `${API_BASE}/instagram/dl` +
-    `?type=${encodeURIComponent(type)}` +
+    `?type=video` +
     `&src=${encodeURIComponent(srcUrl)}` +
     `&filename=${encodeURIComponent(fname)}` +
     `&download=1`;
@@ -135,7 +126,7 @@ async function downloadToTmpFromProxy(type, srcUrl, filenameBase = "instagram") 
 
   const filePath = path.join(
     tmp,
-    `ig-${Date.now()}-${Math.floor(Math.random() * 1e5)}.${ext}`
+    `ig-${Date.now()}-${Math.floor(Math.random() * 1e5)}.mp4`
   );
 
   await new Promise((resolve, reject) => {
@@ -148,74 +139,32 @@ async function downloadToTmpFromProxy(type, srcUrl, filenameBase = "instagram") 
   return filePath;
 }
 
-async function sendMedia(conn, chatId, filePath, mediaType, asDocument, quoted) {
+async function sendVideo(conn, chatId, filePath, asDocument, quoted) {
   const sizeMB = mb(fs.statSync(filePath).size);
 
   if (sizeMB > MAX_MB) {
     try { fs.unlinkSync(filePath); } catch {}
     return conn.sendMessage(
       chatId,
-      { text: `❌ Media ≈ ${sizeMB.toFixed(2)} MB — supera el límite de ${MAX_MB} MB.` },
+      { text: `❌ Video ≈ ${sizeMB.toFixed(2)} MB — supera el límite de ${MAX_MB} MB.` },
       { quoted }
     );
   }
 
   const buf = fs.readFileSync(filePath);
 
-  // video
-  if (mediaType === "video") {
-    await conn.sendMessage(
-      chatId,
-      {
-        [asDocument ? "document" : "video"]: buf,
-        mimetype: "video/mp4",
-        fileName: `instagram-${Date.now()}.mp4`,
-        caption: asDocument ? undefined : "✅ Instagram video listo",
-      },
-      { quoted }
-    );
-  }
-  // image
-  else if (mediaType === "image") {
-    if (asDocument) {
-      await conn.sendMessage(
-        chatId,
-        {
-          document: buf,
-          mimetype: "image/jpeg",
-          fileName: `instagram-${Date.now()}.jpg`,
-        },
-        { quoted }
-      );
-    } else {
-      await conn.sendMessage(
-        chatId,
-        {
-          image: buf,
-        },
-        { quoted }
-      );
-    }
-  } else {
-    // file genérico
-    await conn.sendMessage(
-      chatId,
-      {
-        document: buf,
-        mimetype: "application/octet-stream",
-        fileName: `instagram-${Date.now()}.bin`,
-      },
-      { quoted }
-    );
-  }
+  await conn.sendMessage(
+    chatId,
+    {
+      [asDocument ? "document" : "video"]: buf,
+      mimetype: "video/mp4",
+      fileName: `instagram-${Date.now()}.mp4`,
+      caption: asDocument ? undefined : "✅ Instagram video listo",
+    },
+    { quoted }
+  );
 
   try { fs.unlinkSync(filePath); } catch {}
-}
-
-async function setReaction(conn, chatId, key, emoji) {
-  try {
-    await conn.sendMessage(chatId, { react: { text: emoji, key } });
-  } catch {}
 }
 
 module.exports = async (msg, { conn, args, command }) => {
@@ -229,93 +178,59 @@ module.exports = async (msg, { conn, args, command }) => {
       {
         text:
 `✳️ Usa:
-${pref}${command} <enlace IG o imagen directa>
-Ej:
-${pref}${command} https://www.instagram.com/reel/XXXX/
-${pref}${command} https://.../imagen.jpg`,
+${pref}${command} <enlace IG>
+Ej: ${pref}${command} https://www.instagram.com/reel/XXXX/`,
       },
       { quoted: msg }
     );
   }
 
-  // ✅ si es imagen directa, mandar imagen directo (sin API)
-  if (isImageUrl(text)) {
-    await conn.sendMessage(chatId, { react: { text: "⏳", key: msg.key } });
-
-    try {
-      // usamos proxy IG como "file"? mejor directo con axios normal:
-      const r = await axios.get(text, {
-        responseType: "arraybuffer",
-        timeout: 120000,
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-          Accept: "image/*,*/*",
-        },
-        validateStatus: () => true,
-      });
-
-      if (r.status >= 400) throw new Error(`HTTP ${r.status}`);
-
-      await conn.sendMessage(chatId, { image: Buffer.from(r.data) }, { quoted: msg });
-      await conn.sendMessage(chatId, { react: { text: "✅", key: msg.key } });
-      return;
-    } catch (e) {
-      await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
-      return conn.sendMessage(chatId, { text: `❌ Error: ${e?.message || "unknown"}` }, { quoted: msg });
-    }
-  }
-
-  // IG normal
   text = normalizeIGUrl(text);
 
-  if (!isIG(text)) {
+  if (!isUrl(text) || !isIG(text)) {
     return conn.sendMessage(
       chatId,
-      { text: `❌ Enlace inválido.\nUsa: ${pref}${command} <url>` },
+      { text: `❌ Enlace inválido.\nUsa: ${pref}${command} <url de Instagram>` },
       { quoted: msg }
     );
   }
 
   try {
-    await conn.sendMessage(chatId, { react: { text: "⏳", key: msg.key } });
+    await setReaction(conn, chatId, msg.key, "⏳");
 
     const result = await callSkyInstagram(text);
     const items = extractItems(result);
 
-    // ✅ prioridad: video -> si no, imagen
-    const chosen = pickFirstVideo(items) || pickFirstImage(items);
-
-    if (!chosen) {
-      await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
+    const videoUrl = pickFirstVideo(items);
+    if (!videoUrl) {
+      await setReaction(conn, chatId, msg.key, "❌");
       return conn.sendMessage(
         chatId,
-        { text: "🚫 No se encontró video ni imagen descargable en ese enlace." },
+        { text: "🚫 Ese enlace no tiene un video descargable." },
         { quoted: msg }
       );
     }
 
-    const txt =
-`⚡ Instagram — opciones
+    const optionsText =
+`⚡ Instagram — opciones (SOLO VIDEO)
 
 👍 Enviar normal
 ❤️ Enviar como documento
-— o responde: 1 = normal · 2 = documento
+— o responde: 1 = normal · 2 = documento`;
 
-📌 Detectado: ${chosen.type.toUpperCase()}`;
+    const preview = await conn.sendMessage(chatId, { text: optionsText }, { quoted: msg });
 
-    const preview = await conn.sendMessage(chatId, { text: txt }, { quoted: msg });
-
+    // guardar trabajo pendiente (clave = id del mensaje de opciones)
     pendingIG[preview.key.id] = {
       chatId,
-      url: chosen.url,
-      type: chosen.type,     // 'video' o 'image'
+      url: videoUrl,
       quotedBase: msg,
       previewKey: preview.key,
       createdAt: Date.now(),
+      processing: false,
     };
 
-    await conn.sendMessage(chatId, { react: { text: "✅", key: msg.key } });
+    await setReaction(conn, chatId, msg.key, "✅");
 
     if (!conn._igListener) {
       conn._igListener = true;
@@ -330,30 +245,40 @@ ${pref}${command} https://.../imagen.jpg`,
               }
             }
 
-            // -------- REACCIONES --------
+            // -------- REACCIONES (👍 / ❤️) --------
             if (m.message?.reactionMessage) {
               const { key: reactKey, text: emoji } = m.message.reactionMessage;
               const job = pendingIG[reactKey.id];
               if (!job) continue;
               if (job.chatId !== m.key.remoteJid) continue;
 
+              // solo aceptamos estas reacciones
+              if (emoji !== "👍" && emoji !== "❤️") continue;
+
+              // anti-duplicados
+              if (job.processing) continue;
+              job.processing = true;
+
               const asDoc = emoji === "❤️";
 
-              // 👇 reacción de “descargando”
+              // reacción “descargando” en el mensaje de opciones
               await setReaction(conn, job.chatId, job.previewKey, "⏳");
 
-              // descarga + envío
-              const filePath =
-                job.type === "video"
-                  ? await downloadToTmpFromProxy("video", job.url, "instagram")
-                  : await downloadToTmpFromProxy("image", job.url, "instagram");
+              try {
+                const filePath = await downloadVideoToTmpFromProxy(job.url, "instagram");
+                await sendVideo(conn, job.chatId, filePath, asDoc, job.quotedBase);
+                await setReaction(conn, job.chatId, job.previewKey, "✅");
+              } catch (e) {
+                await setReaction(conn, job.chatId, job.previewKey, "❌");
+                await conn.sendMessage(
+                  job.chatId,
+                  { text: `❌ Error descargando: ${e?.message || "unknown"}` },
+                  { quoted: job.quotedBase }
+                );
+              } finally {
+                delete pendingIG[reactKey.id];
+              }
 
-              await sendMedia(conn, job.chatId, filePath, job.type, asDoc, job.quotedBase);
-
-              // ✅ terminado
-              await setReaction(conn, job.chatId, job.previewKey, "✅");
-
-              delete pendingIG[reactKey.id];
               continue;
             }
 
@@ -370,29 +295,29 @@ ${pref}${command} https://.../imagen.jpg`,
               const job = pendingIG[replyTo];
               if (job.chatId !== m.key.remoteJid) continue;
 
-              if (body === "1" || body === "2") {
-                const asDoc = body === "2";
+              if (body !== "1" && body !== "2") continue;
 
-                // 👇 reacción de “descargando”
-                await setReaction(conn, job.chatId, job.previewKey, "⏳");
+              // anti-duplicados
+              if (job.processing) continue;
+              job.processing = true;
 
-                const filePath =
-                  job.type === "video"
-                    ? await downloadToTmpFromProxy("video", job.url, "instagram")
-                    : await downloadToTmpFromProxy("image", job.url, "instagram");
+              const asDoc = body === "2";
 
-                await sendMedia(conn, job.chatId, filePath, job.type, asDoc, job.quotedBase);
+              await setReaction(conn, job.chatId, job.previewKey, "⏳");
 
-                // ✅ terminado
+              try {
+                const filePath = await downloadVideoToTmpFromProxy(job.url, "instagram");
+                await sendVideo(conn, job.chatId, filePath, asDoc, job.quotedBase);
                 await setReaction(conn, job.chatId, job.previewKey, "✅");
-
-                delete pendingIG[replyTo];
-              } else {
+              } catch (e) {
+                await setReaction(conn, job.chatId, job.previewKey, "❌");
                 await conn.sendMessage(
                   job.chatId,
-                  { text: "⚠️ Responde con *1* (normal) o *2* (documento), o reacciona con 👍 / ❤️." },
+                  { text: `❌ Error descargando: ${e?.message || "unknown"}` },
                   { quoted: job.quotedBase }
                 );
+              } finally {
+                delete pendingIG[replyTo];
               }
             }
           } catch (e) {
@@ -407,12 +332,11 @@ ${pref}${command} https://.../imagen.jpg`,
 
     let msgTxt = "❌ Error al procesar el enlace.";
     if (/enlace no válido|no válido|invalid/i.test(s)) msgTxt = "❌ Enlace no válido (usa link completo con https://).";
-    else if (/no se encontraron medios|no se encontraron|no_media/i.test(s)) msgTxt = "🚫 No se encontraron medios en ese link.";
-    else if (/401|api key|unauthorized|forbidden/i.test(s)) msgTxt = "🔐 API Key inválida o ausente.";
+    else if (/api key|unauthorized|forbidden|401/i.test(s)) msgTxt = "🔐 API Key inválida o ausente.";
     else if (/timeout|timed out|502|upstream/i.test(s)) msgTxt = "⚠️ La upstream tardó demasiado o no respondió.";
 
     await conn.sendMessage(chatId, { text: msgTxt }, { quoted: msg });
-    await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
+    await setReaction(conn, chatId, msg.key, "❌");
   }
 };
 
