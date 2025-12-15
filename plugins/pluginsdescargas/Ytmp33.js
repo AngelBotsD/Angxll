@@ -3,7 +3,7 @@
 
 const axios = require("axios");
 
-const API_BASE = (process.env.API_BASE || "https://api-sky-test.ultraplus.click").replace(/\/+$/, "");
+const API_BASE = (process.env.API_BASE || "https://api-sky.ultraplus.click").replace(/\/+$/, "");
 const API_KEY  = process.env.API_KEY || "Russellxz";
 const MAX_TIMEOUT = 30000;
 
