@@ -1,225 +1,330 @@
-// commands/fb.js — Facebook interactivo (normal o documento) usando Sky API
+
+// commands/fb.js — Facebook interactivo (👍 normal / ❤️ documento o 1/2) usando API NUEVA
+"use strict";
+
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 
-// === Config Sky ===
-const API_BASE = process.env.API_BASE || "https://api-sky.ultraplus.click";
-const SKY_API_KEY = process.env.SKY_API_KEY || global.SKY_API_KEY || "Russellxz";
+// === Config API nueva ===
+const API_BASE = (process.env.API_BASE || "https://api-sky-test.ultraplus.click").replace(/\/+$/, "");
+const API_KEY = process.env.API_KEY || process.env.SKY_API_KEY || global.SKY_API_KEY || "Russellxz";
 
-// --- helpers ---
-function fmtDur(s) {
-  const n = Number(s || 0);
-  const h = Math.floor(n / 3600);
-  const m = Math.floor((n % 3600) / 60);
-  const sec = n % 60;
-  return (h ? `${h}:` : "") + `${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
+// Opcional si tu API lo soporta (para bypass login/bloqueos)
+const FB_COOKIE = process.env.FB_COOKIE || ""; // header: x-fb-cookie
+const FB_UA = process.env.FB_UA || "";         // header: x-fb-ua
+
+const MAX_MB = Number(process.env.MAX_MB || 99);
+
+// Jobs pendientes por ID del mensaje preview
+const pendingFB = Object.create(null);
+
+const mb = (n) => n / (1024 * 1024);
+
+function isFB(u = "") {
+  u = String(u || "");
+  return /(facebook\.com|fb\.watch)/i.test(u);
 }
-async function downloadToFile(url, filePath) {
-  const res = await axios.get(url, { responseType: "stream", timeout: 120000 });
+function isUrl(u = "") {
+  return /^https?:\/\//i.test(String(u || ""));
+}
+function normalizeUrl(input = "") {
+  let u = String(input || "").trim().replace(/^<|>$/g, "").trim();
+  if (/^(www\.)?facebook\.com\//i.test(u) || /^fb\.watch\//i.test(u)) {
+    u = "https://" + u.replace(/^\/+/, "");
+  }
+  return u;
+}
+
+function safeFileName(name = "facebook") {
+  const base = String(name || "facebook").slice(0, 70);
+  return (base.replace(/[^A-Za-z0-9_\-.]+/g, "_") || "facebook");
+}
+
+async function react(conn, chatId, key, emoji) {
+  try {
+    await conn.sendMessage(chatId, { react: { text: emoji, key } });
+  } catch {}
+}
+
+function pickBestVideoUrl(result) {
+  // API nueva similar a instagram: result.media.items = [{type:'video', url}, ...]
+  const items = result?.media?.items;
+  if (Array.isArray(items) && items.length) {
+    // 1) type=video primero
+    let v = items.find((it) => String(it?.type || "").toLowerCase() === "video" && it?.url);
+    if (v?.url) return String(v.url);
+
+    // 2) fallback por extensión
+    v = items.find((it) => /\.mp4(\?|#|$)/i.test(String(it?.url || "")));
+    if (v?.url) return String(v.url);
+  }
+
+  // Fallback por si tu endpoint devuelve otro formato (legacy)
+  const d = result?.data || result;
+  const legacy = d?.video_hd || d?.video_sd;
+  if (legacy) return String(legacy);
+
+  return null;
+}
+
+// ✅ API NUEVA: POST /facebook  body: { url }
+async function callSkyFacebook(url) {
+  const endpoint = `${API_BASE}/facebook`;
+
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json,*/*",
+    apikey: API_KEY,
+  };
+
+  // opcional
+  if (FB_COOKIE) headers["x-fb-cookie"] = FB_COOKIE;
+  if (FB_UA) headers["x-fb-ua"] = FB_UA;
+
+  const r = await axios.post(endpoint, { url }, {
+    headers,
+    timeout: 60000,
+    validateStatus: () => true,
+  });
+
+  let data = r.data;
+  if (typeof data === "string") {
+    try { data = JSON.parse(data.trim()); }
+    catch { throw new Error("Respuesta no JSON del servidor"); }
+  }
+
+  const ok = data?.status === true || data?.status === "true";
+  if (!ok) throw new Error(data?.message || data?.error || `HTTP ${r.status}`);
+
+  return data.result;
+}
+
+// ✅ descarga usando proxy nuevo: /facebook/dl?type=video&src=...&filename=...&download=1
+async function downloadVideoToTmpFromProxy(srcUrl, filenameBase = "facebook") {
+  const tmpDir = path.resolve("./tmp");
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+  const base = safeFileName(filenameBase);
+  const fname = `${base}.mp4`;
+
+  const dlUrl =
+    `${API_BASE}/facebook/dl` +
+    `?type=video` +
+    `&src=${encodeURIComponent(srcUrl)}` +
+    `&filename=${encodeURIComponent(fname)}` +
+    `&download=1`;
+
+  const res = await axios.get(dlUrl, {
+    responseType: "stream",
+    timeout: 180000,
+    headers: {
+      apikey: API_KEY,
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+      Accept: "*/*",
+    },
+    maxRedirects: 5,
+    validateStatus: (s) => s < 400,
+  });
+
+  const filePath = path.join(tmpDir, `fb-${Date.now()}-${Math.floor(Math.random() * 1e5)}.mp4`);
+
   await new Promise((resolve, reject) => {
     const w = fs.createWriteStream(filePath);
     res.data.pipe(w);
     w.on("finish", resolve);
     w.on("error", reject);
   });
+
   return filePath;
 }
-async function callSkyFacebook(url) {
-  const headers = { Authorization: `Bearer ${SKY_API_KEY}` };
 
-  // 1) endpoint .js
+async function sendVideo(conn, job, asDocument, triggerMsg) {
+  const { chatId, url, title, previewKey, quotedBase } = job;
+
   try {
-    const r = await axios.get(`${API_BASE}/api/download/facebook`, {
-      params: { url }, headers, timeout: 30000
-    });
-    if (r.data?.status === "true" && r.data?.data) return r.data;
-  } catch (_) { /* fallback */ }
+    // reacción en el mensaje del usuario que activó (reacción o reply)
+    await react(conn, chatId, triggerMsg.key, asDocument ? "📁" : "🎬");
 
-  // 2) fallback .php
-  const r2 = await axios.get(`${API_BASE}/api/download/facebook.php`, {
-    params: { url }, headers, timeout: 30000
-  });
-  if (r2.data?.status === "true" && r2.data?.data) return r2.data;
+    // reacción “descargando” en el preview
+    await react(conn, chatId, previewKey, "⏳");
 
-  const errMsg = r2.data?.error || "no_media_found";
-  const httpMsg = r2.status ? `HTTP ${r2.status}` : "sin respuesta";
-  throw new Error(`Sky API fallo: ${errMsg} (${httpMsg})`);
+    const filePath = await downloadVideoToTmpFromProxy(url, title || "facebook");
+
+    const sizeMB = mb(fs.statSync(filePath).size);
+    if (sizeMB > MAX_MB) {
+      try { fs.unlinkSync(filePath); } catch {}
+      await react(conn, chatId, previewKey, "❌");
+      return conn.sendMessage(
+        chatId,
+        { text: `❌ Video ≈ ${sizeMB.toFixed(2)} MB — supera el límite de ${MAX_MB} MB.` },
+        { quoted: quotedBase || triggerMsg }
+      );
+    }
+
+    const buf = fs.readFileSync(filePath);
+
+    await conn.sendMessage(
+      chatId,
+      {
+        [asDocument ? "document" : "video"]: buf,
+        mimetype: "video/mp4",
+        fileName: `${safeFileName(title || "facebook")}.mp4`,
+        caption: asDocument ? undefined : "✅ Facebook video listo",
+      },
+      { quoted: quotedBase || triggerMsg }
+    );
+
+    try { fs.unlinkSync(filePath); } catch {}
+
+    await react(conn, chatId, previewKey, "✅");
+    await react(conn, chatId, triggerMsg.key, "✅");
+  } catch (e) {
+    await react(conn, chatId, previewKey, "❌");
+    await react(conn, chatId, triggerMsg.key, "❌");
+    await conn.sendMessage(
+      chatId,
+      { text: `❌ Error enviando: ${e?.message || "unknown"}` },
+      { quoted: job.quotedBase || triggerMsg }
+    );
+  }
 }
 
-// --- estado temporal por mensaje preview ---
-const pending = {}; // { [previewMsgId]: { chatId, videoUrl, title, duration, thumb } }
-
-const handler = async (msg, { conn, args, command }) => {
+module.exports = async (msg, { conn, args, command }) => {
   const chatId = msg.key.remoteJid;
-  const text = (args.join(" ") || "").trim();
-  const pref = (global.prefixes?.[0] || ".");
+  const pref = global.prefixes?.[0] || ".";
+  let text = (args.join(" ") || "").trim();
 
   if (!text) {
-    return conn.sendMessage(chatId, {
-      text:
-`✳️ 𝙐𝙨𝙖:
-${pref}${command} <enlace>
-📌 Ej: ${pref}${command} https://fb.watch/xxxxxx/`
-    }, { quoted: msg });
+    return conn.sendMessage(
+      chatId,
+      { text: `✳️ Usa:\n${pref}${command} <enlace>\nEj: ${pref}${command} https://fb.watch/xxxxxx/` },
+      { quoted: msg }
+    );
   }
 
-  if (!/(facebook\.com|fb\.watch)/i.test(text)) {
-    return conn.sendMessage(chatId, {
-      text:
-`❌ 𝙀𝙣𝙡𝙖𝙘𝙚 𝙞𝙣𝙫𝙖́𝙡𝙞𝙙𝙤.
+  text = normalizeUrl(text);
 
-✳️ 𝙐𝙨𝙖:
-${pref}${command} <enlace>
-📌 Ej: ${pref}${command} https://fb.watch/xxxxxx/`
-    }, { quoted: msg });
+  if (!isUrl(text) || !isFB(text)) {
+    return conn.sendMessage(
+      chatId,
+      { text: `❌ Enlace inválido.\nUsa: ${pref}${command} <url de Facebook/fb.watch>` },
+      { quoted: msg }
+    );
   }
 
   try {
-    await conn.sendMessage(chatId, { react: { text: "⏳", key: msg.key } });
+    await react(conn, chatId, msg.key, "⏳");
 
-    // Llamar a tu API
-    const sky = await callSkyFacebook(text);
-    const d = sky.data || {};
-    const videoUrl = d.video_hd || d.video_sd;
+    const result = await callSkyFacebook(text);
+    const videoUrl = pickBestVideoUrl(result);
+
     if (!videoUrl) {
+      await react(conn, chatId, msg.key, "❌");
       return conn.sendMessage(chatId, { text: "🚫 No se pudo obtener el video." }, { quoted: msg });
     }
 
-    // Caption + opciones (como play)
-    const resos = [
-      d.video_hd ? "HD" : null,
-      d.video_sd && !d.video_hd ? "SD" : d.video_sd ? "SD (alt)" : null
-    ].filter(Boolean).join(" · ") || "Auto";
+    const title = result?.title || "Facebook Video";
 
     const caption =
-`⚡ 𝗙𝗮𝗰𝗲𝗯𝗼𝗼𝗸 𝗩𝗶𝗱𝗲𝗼 — 𝗣𝗿𝗲𝘃𝗶𝗲𝘄
+`⚡ Facebook — opciones
 
-✦ 𝗧𝗶́𝘁𝘂𝗹𝗼: ${d.title || "Facebook Video"}
-✦ 𝗗𝘂𝗿𝗮𝗰𝗶𝗼́𝗻: ${fmtDur(d.duration)}
-✦ 𝗥𝗲𝘀𝗼𝗹𝘂𝗰𝗶𝗼́𝗻: ${resos}
-✦ 𝗦𝗼𝘂𝗿𝗰𝗲: api-sky.ultraplus.click
+👍 Enviar normal
+❤️ Enviar como documento
+— o responde: 1 = normal · 2 = documento`;
 
-Elige cómo enviarlo:
-👍  video normal   ·  1
-❤️  video documento ·  2
+    const preview = await conn.sendMessage(chatId, { text: caption }, { quoted: msg });
 
-🤖 𝙎𝙪𝙠𝙞 𝘽𝙤𝙩`;
-
-    // Enviar preview con miniatura si hay
-    const preview = d.thumbnail
-      ? await conn.sendMessage(chatId, { image: { url: d.thumbnail }, caption }, { quoted: msg })
-      : await conn.sendMessage(chatId, { text: caption }, { quoted: msg });
-
-    // Guardar job
-    pending[preview.key.id] = {
+    // guardar job
+    pendingFB[preview.key.id] = {
       chatId,
-      videoUrl,
-      title: d.title || "Facebook Video",
-      duration: d.duration || 0
+      url: videoUrl,
+      title,
+      quotedBase: msg,
+      previewKey: preview.key,
+      createdAt: Date.now(),
+      processing: false,
     };
 
-    await conn.sendMessage(chatId, { react: { text: "✅", key: msg.key } });
+    await react(conn, chatId, msg.key, "✅");
 
-    // Listener único para reacciones / respuestas
+    // listener único
     if (!conn._fbInteractiveListener) {
       conn._fbInteractiveListener = true;
 
-      conn.ev.on("messages.upsert", async ev => {
+      conn.ev.on("messages.upsert", async (ev) => {
         for (const m of ev.messages) {
-          // --- Reacciones ---
-          if (m.message?.reactionMessage) {
-            const { key: reactKey, text: emoji } = m.message.reactionMessage;
-            const job = pending[reactKey.id];
-            if (job) {
-              const asDoc = emoji === "❤️"; // 👍 normal, ❤️ documento
+          try {
+            // limpiar jobs viejos (15 min)
+            for (const k of Object.keys(pendingFB)) {
+              if (Date.now() - (pendingFB[k]?.createdAt || 0) > 15 * 60 * 1000) {
+                delete pendingFB[k];
+              }
+            }
+
+            // --- Reacciones (👍 / ❤️) ---
+            if (m.message?.reactionMessage) {
+              const { key: reactKey, text: emoji } = m.message.reactionMessage;
+              const job = pendingFB[reactKey.id];
+              if (!job) continue;
+              if (job.chatId !== m.key.remoteJid) continue;
+
+              if (emoji !== "👍" && emoji !== "❤️") continue;
+
+              if (job.processing) continue;
+              job.processing = true;
+
+              const asDoc = emoji === "❤️";
               await sendVideo(conn, job, asDoc, m);
-            }
-          }
 
-          // --- Respuestas citando el preview ---
-          const ctx = m.message?.extendedTextMessage?.contextInfo;
-          const quotedId = ctx?.stanzaId;
-          const bodyTxt = (
-            m.message?.conversation ||
-            m.message?.extendedTextMessage?.text ||
-            ""
-          ).trim().toLowerCase();
-
-          if (quotedId && pending[quotedId]) {
-            const job = pending[quotedId];
-            if (["1", "video"].includes(bodyTxt)) {
-              await sendVideo(conn, job, /*asDoc*/ false, m);
-            } else if (["2", "videodoc", "doc", "documento"].includes(bodyTxt)) {
-              await sendVideo(conn, job, /*asDoc*/ true, m);
-            } else if (bodyTxt) {
-              await conn.sendMessage(m.key.remoteJid, {
-                text: "⚠️ Opciones: 1/👍 (video)  ·  2/❤️ (video documento)"
-              }, { quoted: m });
+              delete pendingFB[reactKey.id];
+              continue;
             }
+
+            // --- Replies 1/2 ---
+            const ctx = m.message?.extendedTextMessage?.contextInfo;
+            const replyTo = ctx?.stanzaId;
+
+            const body =
+              (m.message?.conversation ||
+                m.message?.extendedTextMessage?.text ||
+                "").trim();
+
+            if (replyTo && pendingFB[replyTo]) {
+              const job = pendingFB[replyTo];
+              if (job.chatId !== m.key.remoteJid) continue;
+
+              if (body !== "1" && body !== "2") continue;
+
+              if (job.processing) continue;
+              job.processing = true;
+
+              const asDoc = body === "2";
+              await sendVideo(conn, job, asDoc, m);
+
+              delete pendingFB[replyTo];
+            }
+          } catch (e) {
+            console.error("FB listener error:", e?.message || e);
           }
         }
       });
     }
-
   } catch (err) {
-    console.error("❌ Error en FB interactivo:", err?.message || err);
-    await conn.sendMessage(chatId, {
-      text: "❌ Ocurrió un error al procesar el video de Facebook."
-    }, { quoted: msg });
-    await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
+    console.error("❌ Error FB:", err?.message || err);
+
+    let msgTxt = "❌ Ocurrió un error al procesar el video de Facebook.";
+    const s = String(err?.message || "");
+    if (/api key|unauthorized|forbidden|401/i.test(s)) msgTxt = "🔐 API Key inválida o ausente.";
+    else if (/timeout|timed out|502|upstream/i.test(s)) msgTxt = "⚠️ La upstream tardó demasiado o no respondió.";
+
+    await conn.sendMessage(chatId, { text: msgTxt }, { quoted: msg });
+    await react(conn, chatId, msg.key, "❌");
   }
 };
 
-// Envío final del video (normal o documento)
-async function sendVideo(conn, job, asDocument, triggerMsg) {
-  const { chatId, videoUrl, title } = job;
-
-  try {
-    await conn.sendMessage(chatId, {
-      react: { text: asDocument ? "📁" : "🎬", key: triggerMsg.key }
-    });
-    await conn.sendMessage(chatId, {
-      text: `⏳ Descargando ${asDocument ? "video (documento)" : "video"}…`
-    }, { quoted: triggerMsg });
-
-    const tmpDir = path.resolve("./tmp");
-    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-    const filePath = path.join(tmpDir, `fb-${Date.now()}.mp4`);
-
-    await downloadToFile(videoUrl, filePath);
-
-    const caption = asDocument
-      ? undefined
-      : `⚡ 𝗙𝗮𝗰𝗲𝗯𝗼𝗼𝗸 𝗩𝗶𝗱𝗲𝗼 — 𝗟𝗶𝘀𝘁𝗼\n✦ 𝗧𝗶́𝘁𝘂𝗹𝗼: ${title}\n✦ 𝗦𝗼𝘂𝗿𝗰𝗲: api-sky.ultraplus.click\n\n🤖 𝙎𝙪𝙠𝙞 𝘽𝙤𝙩`;
-
-    await conn.sendMessage(chatId, {
-      [asDocument ? "document" : "video"]: fs.readFileSync(filePath),
-      mimetype: "video/mp4",
-      fileName: `${title}.mp4`,
-      caption
-    }, { quoted: triggerMsg });
-
-    try { fs.unlinkSync(filePath); } catch {}
-
-    await conn.sendMessage(chatId, { react: { text: "✅", key: triggerMsg.key } });
-
-    // limpiar el pending de ese preview
-    // (lo dejamos, por si el user intenta otra opción? puedes borrar si quieres)
-    // delete pending[previewId];
-
-  } catch (e) {
-    console.error("❌ FB sendVideo:", e?.message || e);
-    await conn.sendMessage(chatId, {
-      text: `❌ Error enviando el video: ${e?.message || e}`
-    }, { quoted: triggerMsg });
-    await conn.sendMessage(chatId, { react: { text: "❌", key: triggerMsg.key } });
-  }
-}
-
-handler.command = ["facebook", "fb"];
-handler.help = ["facebook <url>", "fb <url>"];
-handler.tags = ["descargas"];
-handler.register = true;
-
-module.exports = handler;
+module.exports.command = ["facebook", "fb"];
+module.exports.help = ["facebook <url>", "fb <url>"];
+module.exports.tags = ["descargas"];
+module.exports.register = true;
