@@ -1,232 +1,363 @@
-// comandos/ytmp4.js — YouTube -> VIDEO (Sky API) con selección 👍 / ❤️ o 1 / 2, SIN límite + sin timeout
-const axios = require("axios");
 
-const API_BASE = process.env.API_BASE || "https://api-sky.ultraplus.click";
+// comandos/ytmp4.js — YouTube -> VIDEO (Sky API NUEVA /youtube/resolve)
+// ✅ Elige calidad (144/240/360/720/1080/1440/4k)
+// ✅ Interactivo: 👍 normal / ❤️ documento  (o 1 / 2)
+// ✅ Reacciones: ⏳ -> ✅ y al descargar 🎬/📁 -> ✅
+// ✅ SOLO VIDEO (nada de audio)
+// ✅ Sin timeout + descarga segura (si el link es de tu API requiere apikey, por eso bajamos y mandamos el archivo)
+
+"use strict";
+
+const axios = require("axios");
+const fs = require("fs");
+const path = require("path");
+const { promisify } = require("util");
+const { pipeline } = require("stream");
+const streamPipe = promisify(pipeline);
+
+// ==== CONFIG API ====
+const API_BASE = (process.env.API_BASE || "https://api-sky.ultraplus.click").replace(/\/+$/, "");
 const API_KEY  = process.env.API_KEY  || "Russellxz";
 
-// Desactivar timeout y permitir grandes respuestas si algún upstream devuelve un JSON algo “pesado”
-const AXIOS_TIMEOUT = 0; // 0 = sin timeout
-axios.defaults.timeout = AXIOS_TIMEOUT;
+// sin timeout + permitir grande
+axios.defaults.timeout = 0;
 axios.defaults.maxBodyLength = Infinity;
 axios.defaults.maxContentLength = Infinity;
 
-function isYouTube(u) {
-  return /^https?:\/\//i.test(u) && /(youtube\.com|youtu\.be|music\.youtube\.com)/i.test(u);
-}
-function fmtDur(s) {
-  const n = Number(s || 0);
-  const h = Math.floor(n / 3600);
-  const m = Math.floor((n % 3600) / 60);
-  const sec = n % 60;
-  return (h ? `${h}:` : "") + `${m.toString().padStart(2,"0")}:${sec.toString().padStart(2,"0")}`;
-}
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+// calidades válidas
+const VALID_QUALITIES = new Set(["144", "240", "360", "720", "1080", "1440", "4k"]);
+const DEFAULT_QUALITY = "360";
 
-// Jobs pendientes por id del mensaje con opciones
+// jobs pendientes por ID del preview
 const pendingYTV = Object.create(null);
 
-// Llama a tu API con retries + fallback (.js -> .php), sin timeout
-async function callSkyYtVideo(url){
-  const endpoints = ["/api/download/yt.js", "/api/download/yt.php"];
-  const headers = {
-    Authorization: `Bearer ${API_KEY}`,
-    "X-API-Key": API_KEY,
-    Accept: "application/json"
-  };
-  const params = { url, format: "video" };
-
-  let lastErr = null;
-
-  for (const ep of endpoints) {
-    // 3 intentos por endpoint con backoff 1s, 2s, 3s
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const r = await axios.get(`${API_BASE}${ep}`, {
-          params,
-          headers,
-          timeout: AXIOS_TIMEOUT,
-          maxRedirects: 5,
-          // Aceptamos cualquier HTTP y validamos nosotros
-          validateStatus: () => true
-        });
-
-        // If Cloudflare/proxy manda 52x o 403 de modo ataque, reintenta
-        if (r.status >= 500 || r.status === 429 || r.status === 403) {
-          lastErr = new Error(`HTTP ${r.status}${r.data?.error ? ` - ${r.data.error}` : ""}`);
-          await sleep(1000 * attempt);
-          continue;
-        }
-
-        if (r.status !== 200) {
-          lastErr = new Error(`HTTP ${r.status}`);
-          await sleep(1000 * attempt);
-          continue;
-        }
-
-        // Estructura esperada: { status:'true', data:{ title, audio?, video?, thumbnail?, duration? } }
-        const ok = r.data && r.data.status === "true" && r.data.data;
-        if (!ok) {
-          lastErr = new Error(`API inválida: ${JSON.stringify(r.data)}`);
-          await sleep(1000 * attempt);
-          continue;
-        }
-
-        const d = r.data.data || {};
-        const mediaUrl = d.video || d.audio;
-        if (!mediaUrl) {
-          lastErr = new Error("El API no devolvió video.");
-          await sleep(1000 * attempt);
-          continue;
-        }
-
-        return { mediaUrl, meta: d };
-      } catch (e) {
-        // Network/timeout/etc — reintento
-        lastErr = e;
-        await sleep(1000 * attempt);
-      }
-    }
-    // sigue al próximo endpoint
-  }
-
-  throw lastErr || new Error("No se pudo obtener el video.");
+function isYouTube(u = "") {
+  return /^https?:\/\//i.test(u) && /(youtube\.com|youtu\.be|music\.youtube\.com)/i.test(u);
 }
 
-const handler = async (msg, { conn, args, command }) => {
-  const jid  = msg.key.remoteJid;
-  const url  = (args.join(" ") || "").trim();
-  const pref = global.prefixes?.[0] || ".";
+function ensureTmp() {
+  const tmp = path.resolve("./tmp");
+  if (!fs.existsSync(tmp)) fs.mkdirSync(tmp, { recursive: true });
+  return tmp;
+}
+
+function safeName(name = "video") {
+  return (
+    String(name)
+      .slice(0, 90)
+      .replace(/[^\w.\- ]+/g, "_")
+      .replace(/\s+/g, " ")
+      .trim() || "video"
+  );
+}
+
+function fmtDur(sec) {
+  const n = Number(sec || 0);
+  const h = Math.floor(n / 3600);
+  const m = Math.floor((n % 3600) / 60);
+  const s = n % 60;
+  return (h ? `${h}:` : "") + `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+}
+
+function isApiUrl(url = "") {
+  try {
+    const u = new URL(url);
+    const b = new URL(API_BASE);
+    return u.host === b.host;
+  } catch {
+    return false;
+  }
+}
+
+function extractQualityFromText(input = "") {
+  const t = String(input || "").toLowerCase();
+  if (t.includes("4k")) return "4k";
+  const m = t.match(/\b(144|240|360|720|1080|1440)\s*p?\b/);
+  if (m && VALID_QUALITIES.has(m[1])) return m[1];
+  return "";
+}
+
+// Permite: ".ytmp4 <url> 720" o ".ytmp4 <url> 4k"
+function splitUrlAndQuality(raw = "") {
+  const t = String(raw || "").trim();
+  if (!t) return { url: "", quality: "" };
+  const parts = t.split(/\s+/);
+  const last = (parts[parts.length - 1] || "").toLowerCase();
+
+  let q = "";
+  if (last === "4k") q = "4k";
+  else {
+    const m = last.match(/^(144|240|360|720|1080|1440)p?$/i);
+    if (m) q = m[1];
+  }
+
+  if (q) {
+    parts.pop();
+    return { url: parts.join(" ").trim(), quality: q };
+  }
+  return { url: t, quality: "" };
+}
+
+async function downloadToFile(url, filePath) {
+  const headers = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    Accept: "*/*",
+  };
+
+  // si viene de TU API (/youtube/dl) necesita apikey
+  if (isApiUrl(url)) headers["apikey"] = API_KEY;
+
+  const res = await axios.get(url, {
+    responseType: "stream",
+    timeout: 0,
+    headers,
+    maxRedirects: 5,
+    validateStatus: () => true,
+  });
+
+  if (res.status >= 400) throw new Error(`HTTP_${res.status}`);
+
+  await streamPipe(res.data, fs.createWriteStream(filePath));
+  return filePath;
+}
+
+// ==== API NUEVA: POST /youtube/resolve (video) ====
+async function callYoutubeResolveVideo(videoUrl, quality) {
+  const endpoint = `${API_BASE}/youtube/resolve`;
+
+  const r = await axios.post(
+    endpoint,
+    { url: videoUrl, type: "video", quality: quality || DEFAULT_QUALITY },
+    {
+      timeout: 0,
+      headers: {
+        "Content-Type": "application/json",
+        apikey: API_KEY,
+        Accept: "application/json, */*",
+      },
+      validateStatus: () => true,
+    }
+  );
+
+  const data = typeof r.data === "object" ? r.data : null;
+  if (!data) throw new Error("Respuesta no JSON del servidor");
+
+  const ok =
+    data.status === true ||
+    data.status === "true" ||
+    data.ok === true ||
+    data.success === true;
+
+  if (!ok) throw new Error(data.message || data.error || "Error en la API");
+
+  const result = data.result || data.data || data;
+  if (!result?.media) throw new Error("API sin media");
+
+  let dl = result.media.dl_download || "";
+  if (dl && typeof dl === "string" && dl.startsWith("/")) dl = API_BASE + dl;
+
+  const direct = result.media.direct || "";
+
+  return {
+    title: result.title || "YouTube",
+    duration: result.duration || 0,
+    thumbnail: result.thumbnail || "",
+    // preferimos direct, pero si no hay usamos dl_download
+    mediaUrl: direct || dl,
+  };
+}
+
+const handler = async (msg, { conn, text, usedPrefix, command }) => {
+  const chatId = msg.key.remoteJid;
+  const pref = (global.prefixes && global.prefixes[0]) || usedPrefix || ".";
+
+  const { url, quality } = splitUrlAndQuality(text);
+  const chosenQ = VALID_QUALITIES.has(quality) ? quality : DEFAULT_QUALITY;
 
   if (!url) {
-    return conn.sendMessage(jid, {
-      text: `✳️ *Usa:*\n${pref}${command} <url>\nEj: ${pref}${command} https://youtu.be/xxxxxx`
-    }, { quoted: msg });
+    return conn.sendMessage(
+      chatId,
+      {
+        text:
+`✳️ Usa:
+${pref}${command} <url> [calidad]
+Ej:
+${pref}${command} https://youtu.be/xxxx 720
+${pref}${command} https://youtu.be/xxxx 4k
+
+Calidades: 144 240 360 720 1080 1440 4k`,
+      },
+      { quoted: msg }
+    );
   }
+
   if (!isYouTube(url)) {
-    return conn.sendMessage(jid, { text: "❌ *URL de YouTube inválida.*" }, { quoted: msg });
+    return conn.sendMessage(chatId, { text: "❌ URL de YouTube inválida." }, { quoted: msg });
   }
 
   try {
-    await conn.sendMessage(jid, { react: { text: "⏱️", key: msg.key } });
+    await conn.sendMessage(chatId, { react: { text: "⏳", key: msg.key } });
 
-    // 1) Pide a tu API (sin timeout + retries + fallback)
-    const { mediaUrl, meta } = await callSkyYtVideo(url);
-    const title = meta.title || "YouTube Video";
-    const dur   = meta.duration ? fmtDur(meta.duration) : "—";
-    const thumb = meta.thumbnail || "";
-
-    // 2) Mensaje de selección (reacciones o números)
+    // Preview: solo info rápida (no descarga aún)
+    // (no resolvemos todavía para no gastar; resolvemos cuando elijan 1/2 o 👍/❤️)
     const caption =
 `⚡ 𝗬𝗼𝘂𝗧𝘂𝗯𝗲 — 𝗩𝗶𝗱𝗲𝗼
 
 Elige cómo enviarlo:
 👍 𝗩𝗶𝗱𝗲𝗼 (normal)
 ❤️ 𝗩𝗶𝗱𝗲𝗼 𝗰𝗼𝗺𝗼 𝗱𝗼𝗰𝘂𝗺𝗲𝗻𝘁𝗼
-— 𝗼 responde: 1 = video · 2 = documento
+— o responde: 1 = video · 2 = documento
 
-✦ 𝗧𝗶́𝘁𝘂𝗹𝗼: ${title}
-✦ 𝗗𝘂𝗿𝗮𝗰𝗶𝗼́𝗻: ${dur}
-✦ 𝗦𝗼𝘂𝗿𝗰𝗲: api-sky.ultraplus.click
+⚙️ Calidad: ${chosenQ === "4k" ? "4K" : `${chosenQ}p`}
+✦ Source: api-sky.ultraplus.click
 ────────────
 🤖 𝙎𝙪𝙠𝙞 𝘽𝙤𝙩`;
 
-    let selectorMsg;
-    if (thumb) {
-      selectorMsg = await conn.sendMessage(jid, { image: { url: thumb }, caption }, { quoted: msg });
-    } else {
-      selectorMsg = await conn.sendMessage(jid, { text: caption }, { quoted: msg });
-    }
+    const selectorMsg = await conn.sendMessage(chatId, { text: caption }, { quoted: msg });
 
-    // Guarda el job
     pendingYTV[selectorMsg.key.id] = {
-      chatId: jid,
-      mediaUrl,
-      title,
-      baseMsg: msg
+      chatId,
+      url,
+      quality: chosenQ,
+      baseMsg: msg,
+      lock: false, // anti-duplicados
     };
 
-    await conn.sendMessage(jid, { react: { text: "✅", key: msg.key } });
+    await conn.sendMessage(chatId, { react: { text: "✅", key: msg.key } });
 
-    // 3) Listener único para reacciones / respuestas
     if (!conn._ytvListener) {
       conn._ytvListener = true;
+
       conn.ev.on("messages.upsert", async (ev) => {
         for (const m of ev.messages) {
           try {
-            // REACCIÓN
+            // === REACCIONES ===
             if (m.message?.reactionMessage) {
               const { key: reactedKey, text: emoji } = m.message.reactionMessage;
               const job = pendingYTV[reactedKey.id];
-              if (job) {
-                const asDoc = emoji === "❤️";
-                await sendVideo(conn, job, asDoc, m);
-                delete pendingYTV[reactedKey.id];
-              }
+              if (!job) continue;
+
+              if (emoji !== "👍" && emoji !== "❤️") continue;
+
+              const asDoc = emoji === "❤️";
+              await processSend(conn, job, asDoc, m, /*replyText*/ "");
+              continue;
             }
-            // RESPUESTA con 1 / 2
+
+            // === RESPUESTAS 1/2 (y opcional calidad) ===
             const ctx = m.message?.extendedTextMessage?.contextInfo;
             const replyTo = ctx?.stanzaId;
-            const txt = (m.message?.conversation || m.message?.extendedTextMessage?.text || "").trim().toLowerCase();
-            if (replyTo && pendingYTV[replyTo]) {
-              const job = pendingYTV[replyTo];
-              if (txt === "1" || txt === "2") {
-                const asDoc = txt === "2";
-                await sendVideo(conn, job, asDoc, m);
-                delete pendingYTV[replyTo];
-              } else if (txt) {
-                await conn.sendMessage(job.chatId, {
-                  text: "⚠️ Responde con *1* (video) o *2* (documento), o reacciona con 👍 / ❤️."
-                }, { quoted: job.baseMsg });
-              }
+            if (!replyTo) continue;
+
+            const job = pendingYTV[replyTo];
+            if (!job) continue;
+
+            const txtRaw =
+              m.message?.conversation ||
+              m.message?.extendedTextMessage?.text ||
+              "";
+            const txt = String(txtRaw || "").trim().toLowerCase();
+            if (!txt) continue;
+
+            const first = txt.split(/\s+/)[0];
+            if (first !== "1" && first !== "2") {
+              await conn.sendMessage(job.chatId, {
+                text: "⚠️ Responde con *1* (video) o *2* (documento), o reacciona con 👍 / ❤️.\nTip: también puedes poner calidad: `1 720` o `2 1080`",
+              }, { quoted: job.baseMsg });
+              continue;
             }
+
+            const qFromReply = extractQualityFromText(txt);
+            if (qFromReply && VALID_QUALITIES.has(qFromReply)) job.quality = qFromReply;
+
+            const asDoc = first === "2";
+            await processSend(conn, job, asDoc, m, txt);
           } catch (e) {
             console.error("ytmp4 listener error:", e);
           }
         }
       });
     }
-
   } catch (err) {
     console.error("ytmp4 error:", err?.message || err);
-    try {
-      await conn.sendMessage(jid, { text: `❌ ${err?.message || "Error procesando el enlace."}` }, { quoted: msg });
-      await conn.sendMessage(jid, { react: { text: "❌", key: msg.key } });
-    } catch {}
+    await conn.sendMessage(chatId, { text: `❌ ${err?.message || "Error procesando el enlace."}` }, { quoted: msg });
+    await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
   }
 };
 
-async function sendVideo(conn, job, asDocument, triggerMsg){
-  const { chatId, mediaUrl, title, baseMsg } = job;
+async function processSend(conn, job, asDocument, triggerMsg) {
+  // anti spam / duplicados
+  if (job.lock) return;
+  job.lock = true;
 
-  await conn.sendMessage(chatId, { react: { text: asDocument ? "📁" : "🎬", key: triggerMsg.key } });
-  await conn.sendMessage(chatId, { text: `⏳ Enviando ${asDocument ? "como documento" : "video"}…` }, { quoted: baseMsg });
+  // borramos de una para evitar doble envío si llegan 2 eventos juntos
+  const toDeleteKey = Object.keys(pendingYTV).find((k) => pendingYTV[k] === job);
+  if (toDeleteKey) delete pendingYTV[toDeleteKey];
 
-  // SIN límite de tamaño: mandamos por URL directo
-  const caption =
+  const q = VALID_QUALITIES.has(job.quality) ? job.quality : DEFAULT_QUALITY;
+  const qLabel = q === "4k" ? "4K" : `${q}p`;
+
+  try {
+    await conn.sendMessage(job.chatId, { react: { text: asDocument ? "📁" : "🎬", key: triggerMsg.key } });
+    await conn.sendMessage(job.chatId, { text: `⏳ Descargando video (${qLabel})…` }, { quoted: job.baseMsg });
+
+    // 1) resolver por API nueva
+    const resolved = await callYoutubeResolveVideo(job.url, q);
+    const title = resolved.title || "YouTube";
+    const durTxt = resolved.duration ? fmtDur(resolved.duration) : "—";
+    const mediaUrl = resolved.mediaUrl;
+
+    if (!mediaUrl) throw new Error("No se pudo obtener video (sin URL).");
+
+    // 2) descargar a archivo (para soportar /youtube/dl con apikey)
+    const tmp = ensureTmp();
+    const base = safeName(title);
+    const tag = q === "4k" ? "4k" : `${q}p`;
+    const filePath = path.join(tmp, `yt-${Date.now()}-${base}-${tag}.mp4`);
+
+    await downloadToFile(mediaUrl, filePath);
+
+    // 3) enviar
+    const caption =
 `⚡ 𝗬𝗼𝘂𝗧𝘂𝗯𝗲 𝗩𝗶𝗱𝗲𝗼 — 𝗟𝗶𝘀𝘁𝗼
 
-✦ 𝗧𝗶́𝘁𝘂𝗹𝗼: ${title}
+✦ 𝗧𝗶́𝘁𝘂𝗹𝗼: ${base}
+✦ 𝗗𝘂𝗿𝗮𝗰𝗶𝗼́𝗻: ${durTxt}
+✦ 𝗖𝗮𝗹𝗶𝗱𝗮𝗱: ${qLabel}
 ✦ 𝗦𝗼𝘂𝗿𝗰𝗲: api-sky.ultraplus.click
 
 🤖 𝙎𝙪𝙠𝙞 𝘽𝙤𝙩`;
 
-  if (asDocument) {
-    await conn.sendMessage(chatId, {
-      document: { url: mediaUrl },
-      mimetype: "video/mp4",
-      fileName: `${title}.mp4`,
-      caption
-    }, { quoted: baseMsg });
-  } else {
-    await conn.sendMessage(chatId, {
-      video: { url: mediaUrl },
-      mimetype: "video/mp4",
-      caption
-    }, { quoted: baseMsg });
-  }
+    const buf = fs.readFileSync(filePath);
 
-  await conn.sendMessage(chatId, { react: { text: "✅", key: triggerMsg.key } });
+    if (asDocument) {
+      await conn.sendMessage(job.chatId, {
+        document: buf,
+        mimetype: "video/mp4",
+        fileName: `${base}_${tag}.mp4`,
+        caption,
+      }, { quoted: job.baseMsg });
+    } else {
+      await conn.sendMessage(job.chatId, {
+        video: buf,
+        mimetype: "video/mp4",
+        caption,
+      }, { quoted: job.baseMsg });
+    }
+
+    try { fs.unlinkSync(filePath); } catch {}
+    await conn.sendMessage(job.chatId, { react: { text: "✅", key: triggerMsg.key } });
+  } catch (e) {
+    console.error("ytmp4 send error:", e?.message || e);
+    await conn.sendMessage(job.chatId, { text: `❌ Error enviando video: ${e?.message || e}` }, { quoted: job.baseMsg });
+    await conn.sendMessage(job.chatId, { react: { text: "❌", key: triggerMsg.key } });
+  }
 }
 
-handler.command = ["ytmp4","ytv"];
+handler.command  = ["ytmp4", "ytv"];
+handler.help     = ["ytmp4 <url> [calidad]", "ytv <url> [calidad]"];
+handler.tags     = ["descargas"];
+handler.register = true;
+
 module.exports = handler;
