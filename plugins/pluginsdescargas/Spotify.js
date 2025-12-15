@@ -67,7 +67,7 @@ async function sendAudio(conn, job, asDocument, triggerMsg) {
       {
         [asDocument ? "document" : "audio"]: { url: mp3Url },
         mimetype: "audio/mpeg",
-        fileName: asDocument ? `\( {title} - \){artist}.mp3` : undefined,
+        fileName: asDocument ? `\( {safeBaseFromTitle(title)} - \){artist}.mp3` : undefined,
         caption,
       },
       { quoted: quotedBase || triggerMsg }
@@ -86,15 +86,21 @@ async function sendAudio(conn, job, asDocument, triggerMsg) {
   }
 }
 
+function safeBaseFromTitle(title) {
+  return String(title || "spotify").slice(0, 70).replace(/[^A-Za-z0-9_\-.]+/g, "_");
+}
+
 module.exports = async (msg, { conn, args, command }) => {
   const chatId = msg.key.remoteJid;
-  const pref = global.prefixes?.[0] || ".";
+  const pref = global.prefixes?.[0] || "."; // prefijo real
   let text = (args.join(" ") || "").trim();
 
   if (!text) {
     return conn.sendMessage(
       chatId,
-      { text: `✳️ Usa:\n\( {pref} \){command} <nombre de canción o URL Spotify>\nEj: \( {pref} \){command} bad bunny tití me preguntó` },
+      { 
+        text: `✳️ Usa:\n\( {pref}spotify <canción o URL> o \){pref}sp <canción o URL>\nEj: ${pref}sp bad bunny tití me preguntó` 
+      },
       { quoted: msg }
     );
   }
@@ -205,6 +211,6 @@ module.exports = async (msg, { conn, args, command }) => {
 };
 
 module.exports.command = ["spotify", "sp"];
-module.exports.help = ["spotify <query o url>", "sp <query o url>"];
+module.exports.help = ["spotify <canción o url>", "sp <canción o url>"];
 module.exports.tags = ["descargas"];
 module.exports.register = true;
