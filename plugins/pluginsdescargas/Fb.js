@@ -1,5 +1,4 @@
-
-// commands/fb.js — Facebook interactivo (👍 normal / ❤️ documento o 1/2) usando API NUEVA
+// commands/fb.js — Facebook interactivo (👍 normal / ❤️ documento o 1/2) usando API NUEVA (tu scraper)
 "use strict";
 
 const axios = require("axios");
@@ -8,11 +7,11 @@ const path = require("path");
 
 // === Config API nueva ===
 const API_BASE = (process.env.API_BASE || "https://api-sky-test.ultraplus.click").replace(/\/+$/, "");
-const API_KEY = process.env.API_KEY || process.env.SKY_API_KEY || global.SKY_API_KEY || "Russellxz";
+const API_KEY  = process.env.API_KEY  || process.env.SKY_API_KEY || global.SKY_API_KEY || "Russellxz";
 
-// Opcional si tu API lo soporta (para bypass login/bloqueos)
+// Opcional si tu API lo soporta (docs)
 const FB_COOKIE = process.env.FB_COOKIE || ""; // header: x-fb-cookie
-const FB_UA = process.env.FB_UA || "";         // header: x-fb-ua
+const FB_UA     = process.env.FB_UA || "";     // header: x-fb-ua
 
 const MAX_MB = Number(process.env.MAX_MB || 99);
 
@@ -21,12 +20,12 @@ const pendingFB = Object.create(null);
 
 const mb = (n) => n / (1024 * 1024);
 
+function isUrl(u = "") {
+  return /^https?:\/\//i.test(String(u || ""));
+}
 function isFB(u = "") {
   u = String(u || "");
   return /(facebook\.com|fb\.watch)/i.test(u);
-}
-function isUrl(u = "") {
-  return /^https?:\/\//i.test(String(u || ""));
 }
 function normalizeUrl(input = "") {
   let u = String(input || "").trim().replace(/^<|>$/g, "").trim();
@@ -35,35 +34,28 @@ function normalizeUrl(input = "") {
   }
   return u;
 }
-
 function safeFileName(name = "facebook") {
   const base = String(name || "facebook").slice(0, 70);
   return (base.replace(/[^A-Za-z0-9_\-.]+/g, "_") || "facebook");
 }
 
 async function react(conn, chatId, key, emoji) {
-  try {
-    await conn.sendMessage(chatId, { react: { text: emoji, key } });
-  } catch {}
+  try { await conn.sendMessage(chatId, { react: { text: emoji, key } }); } catch {}
 }
 
+// ✅ TU API: result.media.video_hd / result.media.video_sd
 function pickBestVideoUrl(result) {
-  // API nueva similar a instagram: result.media.items = [{type:'video', url}, ...]
-  const items = result?.media?.items;
-  if (Array.isArray(items) && items.length) {
-    // 1) type=video primero
-    let v = items.find((it) => String(it?.type || "").toLowerCase() === "video" && it?.url);
-    if (v?.url) return String(v.url);
+  const hd = String(result?.media?.video_hd || "").trim();
+  const sd = String(result?.media?.video_sd || "").trim();
 
-    // 2) fallback por extensión
-    v = items.find((it) => /\.mp4(\?|#|$)/i.test(String(it?.url || "")));
-    if (v?.url) return String(v.url);
-  }
+  if (hd && /^https?:\/\//i.test(hd)) return hd; // prioriza HD
+  if (sd && /^https?:\/\//i.test(sd)) return sd;
 
-  // Fallback por si tu endpoint devuelve otro formato (legacy)
-  const d = result?.data || result;
-  const legacy = d?.video_hd || d?.video_sd;
-  if (legacy) return String(legacy);
+  // Fallback por si algún día cambias formato
+  const altHd = String(result?.video_hd || "").trim();
+  const altSd = String(result?.video_sd || "").trim();
+  if (altHd && /^https?:\/\//i.test(altHd)) return altHd;
+  if (altSd && /^https?:\/\//i.test(altSd)) return altSd;
 
   return null;
 }
@@ -77,8 +69,6 @@ async function callSkyFacebook(url) {
     Accept: "application/json,*/*",
     apikey: API_KEY,
   };
-
-  // opcional
   if (FB_COOKIE) headers["x-fb-cookie"] = FB_COOKIE;
   if (FB_UA) headers["x-fb-ua"] = FB_UA;
 
@@ -144,9 +134,8 @@ async function sendVideo(conn, job, asDocument, triggerMsg) {
   const { chatId, url, title, previewKey, quotedBase } = job;
 
   try {
-    // reacción en el mensaje del usuario que activó (reacción o reply)
+    // reacción en el mensaje que activó
     await react(conn, chatId, triggerMsg.key, asDocument ? "📁" : "🎬");
-
     // reacción “descargando” en el preview
     await react(conn, chatId, previewKey, "⏳");
 
@@ -222,7 +211,7 @@ module.exports = async (msg, { conn, args, command }) => {
 
     if (!videoUrl) {
       await react(conn, chatId, msg.key, "❌");
-      return conn.sendMessage(chatId, { text: "🚫 No se pudo obtener el video." }, { quoted: msg });
+      return conn.sendMessage(chatId, { text: "🚫 No se encontró video descargable (privado/bloqueado)." }, { quoted: msg });
     }
 
     const title = result?.title || "Facebook Video";
@@ -236,7 +225,6 @@ module.exports = async (msg, { conn, args, command }) => {
 
     const preview = await conn.sendMessage(chatId, { text: caption }, { quoted: msg });
 
-    // guardar job
     pendingFB[preview.key.id] = {
       chatId,
       url: videoUrl,
@@ -249,7 +237,6 @@ module.exports = async (msg, { conn, args, command }) => {
 
     await react(conn, chatId, msg.key, "✅");
 
-    // listener único
     if (!conn._fbInteractiveListener) {
       conn._fbInteractiveListener = true;
 
@@ -263,7 +250,7 @@ module.exports = async (msg, { conn, args, command }) => {
               }
             }
 
-            // --- Reacciones (👍 / ❤️) ---
+            // --- Reacciones (👍 / ❤️) al preview ---
             if (m.message?.reactionMessage) {
               const { key: reactKey, text: emoji } = m.message.reactionMessage;
               const job = pendingFB[reactKey.id];
@@ -282,7 +269,7 @@ module.exports = async (msg, { conn, args, command }) => {
               continue;
             }
 
-            // --- Replies 1/2 ---
+            // --- Replies 1/2 citando el preview ---
             const ctx = m.message?.extendedTextMessage?.contextInfo;
             const replyTo = ctx?.stanzaId;
 
