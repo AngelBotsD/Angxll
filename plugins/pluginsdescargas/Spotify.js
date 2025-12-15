@@ -92,14 +92,14 @@ function safeBaseFromTitle(title) {
 
 module.exports = async (msg, { conn, args, command }) => {
   const chatId = msg.key.remoteJid;
-  const pref = global.prefixes?.[0] || "."; // prefijo real
+  const pref = global.prefixes?.[0] || "."; // prefijo real del bot
   let text = (args.join(" ") || "").trim();
 
   if (!text) {
     return conn.sendMessage(
       chatId,
       { 
-        text: `✳️ Usa:\n\( {pref}spotify <canción o URL> o \){pref}sp <canción o URL>\nEj: ${pref}sp bad bunny tití me preguntó` 
+        text: `✳️ Usa:\n\( {pref}spotify <canción o URL>\no\n \){pref}sp <canción o URL>\n\nEjemplo:\n${pref}sp bad bunny tití me preguntó` 
       },
       { quoted: msg }
     );
