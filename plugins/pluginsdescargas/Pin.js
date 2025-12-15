@@ -1,4 +1,4 @@
-// commands/pinterestimg.js
+
 "use strict";
 
 const axios = require("axios");
@@ -10,12 +10,19 @@ const API_KEY  = process.env.API_KEY  || "Russellxz";
 const LIMIT = 10;
 
 // ---- helpers ----
-function isUrl(s = "") {
+function looksLikeUrl(s = "") {
   return /^https?:\/\//i.test(String(s || ""));
 }
-function isImageUrl(u = "") {
-  u = String(u || "");
-  return /^https?:\/\//i.test(u) && /\.(png|jpe?g|webp|gif)(\?|#|$)/i.test(u);
+
+function pickBestImage(it) {
+  return (
+    it?.image_medium_url ||
+    it?.image_large_url ||
+    it?.image_small_url ||
+    it?.url ||
+    it?.image ||
+    ""
+  );
 }
 
 // descarga imagen a buffer (para mandarla por whatsapp)
@@ -28,33 +35,60 @@ async function downloadImageBuffer(url) {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
       Accept: "image/*,*/*",
     },
+    maxRedirects: 5,
     validateStatus: () => true,
   });
 
   if (r.status >= 400) throw new Error(`HTTP ${r.status}`);
-  const ct = String(r.headers["content-type"] || "");
-  if (!ct.startsWith("image/")) {
-    // aún así puede ser imagen sin header; no frenamos duro, pero avisamos si quieres
-  }
   return Buffer.from(r.data);
 }
 
-async function callPinterestImages(q, limit = LIMIT) {
-  const endpoint = `${API_BASE}/pinterest-images`;
-  const r = await axios.get(endpoint, {
-    params: { q, limit },
-    headers: { apikey: API_KEY, Accept: "application/json,*/*" },
-    timeout: 60000,
-    validateStatus: () => true,
-  });
+// ✅ Llamada correcta a tu API NUEVA (plugin: /pinterestimg)
+async function callPinterestImages(q) {
+  const endpoint = `${API_BASE}/pinterestimg`; // ✅ correcto
+  const r = await axios.post(
+    endpoint,
+    { q, limit: LIMIT }, // limit lo mandamos por si luego lo usas; tu API puede ignorarlo
+    {
+      headers: {
+        "Content-Type": "application/json",
+        apikey: API_KEY,
+        Accept: "application/json, */*",
+      },
+      timeout: 60000,
+      validateStatus: () => true,
+    }
+  );
 
-  const data = typeof r.data === "object" ? r.data : null;
-  if (!data) throw new Error("Respuesta no JSON del servidor");
+  // Si vino string (HTML/texto), intentamos parsear JSON
+  let data = r.data;
+  if (typeof data === "string") {
+    const t = data.trim();
+    try {
+      data = JSON.parse(t);
+    } catch {
+      // HTML / texto
+      throw new Error(`Respuesta no JSON del servidor (HTTP ${r.status})`);
+    }
+  }
 
-  const ok = data.status === true || data.status === "true";
-  if (!ok) throw new Error(data.message || data.error || "Error en API Pinterest");
+  if (!data || typeof data !== "object") {
+    throw new Error(`API inválida (HTTP ${r.status})`);
+  }
 
-  return data.result;
+  const ok =
+    data.status === true ||
+    data.status === "true" ||
+    data.ok === true ||
+    data.success === true;
+
+  if (!ok) {
+    throw new Error(data.message || data.error || `Error en API (HTTP ${r.status})`);
+  }
+
+  // tu API devuelve { status:true, result:{ ... } }
+  const payload = data.result || data.data || data;
+  return payload;
 }
 
 // ---- command ----
@@ -66,7 +100,16 @@ module.exports = async (msg, { conn, text }) => {
   if (!input) {
     return conn.sendMessage(
       chatId,
-      { text: `🖼️ Usa:\n${pref}pinterestimg <búsqueda|link_imagen>\nEj: ${pref}pinterestimg gatos anime` },
+      { text: `🖼️ Usa:\n${pref}pinterestimg <búsqueda>\nEj: ${pref}pinterestimg gatos anime` },
+      { quoted: msg }
+    );
+  }
+
+  // ✅ Solo búsqueda por texto (como pediste)
+  if (looksLikeUrl(input)) {
+    return conn.sendMessage(
+      chatId,
+      { text: `⚠️ Este comando ahora es SOLO búsqueda por texto.\nEj: ${pref}pinterestimg gatos anime` },
       { quoted: msg }
     );
   }
@@ -75,43 +118,31 @@ module.exports = async (msg, { conn, text }) => {
   await conn.sendMessage(chatId, { react: { text: "⏳", key: msg.key } });
 
   try {
-    // ✅ Si es URL directa de imagen -> mandar 1
-    if (isUrl(input) && isImageUrl(input)) {
-      await conn.sendMessage(chatId, { react: { text: "🖼️", key: msg.key } });
+    const result = await callPinterestImages(input);
 
-      const buf = await downloadImageBuffer(input);
-      await conn.sendMessage(
-        chatId,
-        { image: buf, caption: "📌 Imagen (URL directa)" },
-        { quoted: msg }
-      );
-
-      await conn.sendMessage(chatId, { react: { text: "✅", key: msg.key } });
-      return;
-    }
-
-    // 🔎 búsqueda -> pedir top 10 a tu API
-    const result = await callPinterestImages(input, LIMIT);
-    const images = Array.isArray(result?.results) ? result.results.slice(0, LIMIT) : [];
+    // Tu API: result.results (array)
+    const raw = Array.isArray(result?.results) ? result.results : Array.isArray(result) ? result : [];
+    const images = raw.slice(0, LIMIT);
 
     if (!images.length) {
       await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
       return conn.sendMessage(chatId, { text: "❌ No encontré imágenes." }, { quoted: msg });
     }
 
-    await conn.sendMessage(chatId, {
-      text: `📌 Pinterest resultados: *${images.length}*\n🔎 Búsqueda: *${input}*\nEnviando imágenes...`,
-    }, { quoted: msg });
+    await conn.sendMessage(
+      chatId,
+      {
+        text:
+          `📌 Pinterest resultados: *${images.length}*\n` +
+          `🔎 Búsqueda: *${input}*\n` +
+          `📤 Enviando las primeras ${images.length} imágenes...`,
+      },
+      { quoted: msg }
+    );
 
-    // mandar las 10 primeras (una por una)
     for (let i = 0; i < images.length; i++) {
       const it = images[i];
-      const url =
-        it.image_medium_url ||
-        it.image_large_url ||
-        it.image_small_url ||
-        "";
-
+      const url = pickBestImage(it);
       if (!url) continue;
 
       await conn.sendMessage(chatId, { react: { text: "🖼️", key: msg.key } });
@@ -123,8 +154,8 @@ module.exports = async (msg, { conn, text }) => {
           { image: buf, caption: `(${i + 1}/${images.length}) ${it.title || "Pinterest"}` },
           { quoted: msg }
         );
-      } catch {
-        // fallback: si falla buffer, manda URL
+      } catch (e) {
+        // fallback: manda URL si falla buffer
         await conn.sendMessage(
           chatId,
           { text: `(${i + 1}/${images.length}) ${it.title || "Pinterest"}\n${url}` },
