@@ -1,4 +1,4 @@
-// comandos/xnxx.js — XNXX con opciones (👍 video / ❤️ documento o 1 / 2)
+// comandos/xnxx.js
 const axios = require("axios");
 
 const API_BASE = process.env.API_BASE || "https://api-sky-test.ultraplus.click";
@@ -13,11 +13,9 @@ const fmtSec = (s) => {
   return (h ? `\( {h}:` : "") + ` \){m.toString().padStart(2,"0")}:${sec.toString().padStart(2,"0")}`;
 };
 
-// jobs pendientes por id del mensaje de opciones
 const pendingXNXX = Object.create(null);
 
 async function getXnxxFromSky(url){
-  // ✅ endpoint real de tu API: POST /xnxx
   const { data: res, status: http } = await axios.post(
     `${API_BASE}/xnxx`,
     { url },
@@ -32,11 +30,7 @@ async function getXnxxFromSky(url){
     }
   );
 
-  if (http !== 200) {
-    throw new Error(`HTTP \( {http} \){res?.message ? ` - ${res.message}` : ""}`);
-  }
-
-  // ✅ formato real: { status: true, result: {...} }
+  if (http !== 200) throw new Error(`HTTP \( {http} \){res?.message ? ` - ${res.message}` : ""}`);
   if (!res || res.status !== true || !res.result?.media?.video) {
     throw new Error(res?.message || "La API no devolvió un video válido.");
   }
@@ -56,12 +50,7 @@ const handler = async (msg, { conn, args, command }) => {
   const pref   = (global.prefixes && global.prefixes[0]) || ".";
 
   if (!text) {
-    return conn.sendMessage(chatId, {
-      text:
-`✳️ 𝙐𝙨𝙖:
-\( {pref} \){command} <enlace>
-Ej: \( {pref} \){command} https://www.xnxx.com/video-xxxxx/titulo`
-    }, { quoted: msg });
+    return conn.sendMessage(chatId, { text: `✳️ 𝙐𝙨𝙖:\n\( {pref} \){command} <enlace>\nEj: \( {pref} \){command} https://www.xnxx.com/video-xxxxx/titulo` }, { quoted: msg });
   }
 
   const url = args[0];
@@ -71,16 +60,12 @@ Ej: \( {pref} \){command} https://www.xnxx.com/video-xxxxx/titulo`
 
   try {
     await conn.sendMessage(chatId, { react: { text: "⏱️", key: msg.key } });
-
-    // 1) Llama a tu API
     const d = await getXnxxFromSky(url);
 
-    const title   = d.title || "XNXX Video";
-    const durTxt  = d.duration ? fmtSec(d.duration) : "—";
+    const title  = d.title || "XNXX Video";
+    const durTxt = d.duration ? fmtSec(d.duration) : "—";
 
-    // 2) Mensaje de opciones (con advertencia +18)
-    const txt =
-`⚡ 𝗫𝗡𝗫𝗫 — 𝗼𝗽𝗰𝗶𝗼𝗻𝗲𝘀 ⚠️ +18
+    const txt = `⚡ 𝗫𝗡𝗫𝗫 — 𝗼𝗽𝗰𝗶𝗼𝗻𝗲𝘀 ⚠️ +18
 
 Elige cómo enviarlo:
 👍 𝗩𝗶𝗱𝗲𝗼 (normal)
@@ -95,12 +80,10 @@ Elige cómo enviarlo:
 
     const preview = await conn.sendMessage(chatId, { text: txt }, { quoted: msg });
 
-    // guarda el trabajo
     pendingXNXX[preview.key.id] = {
       chatId,
       url: d.video,
-      caption:
-`⚡ 𝗫𝗡𝗫𝗫 — 𝘃𝗶𝗱𝗲𝗼 𝗹𝗶𝘀𝘁𝗼 ⚠️ +18
+      caption: `⚡ 𝗫𝗡𝗫𝗫 — 𝘃𝗶𝗱𝗲𝗼 𝗹𝗶𝘀𝘁𝗼 ⚠️ +18
 
 ✦ 𝗧𝗶́𝘁𝘂𝗹𝗼: ${title}
 ✦ 𝗗𝘂𝗿𝗮𝗰𝗶𝗼́𝗻: ${durTxt}
@@ -113,107 +96,65 @@ Elige cómo enviarlo:
 
     await conn.sendMessage(chatId, { react: { text: "✅", key: msg.key } });
 
-    // 3) Listener único (separado del de TikTok)
     if (!conn._xnxxListener) {
       conn._xnxxListener = true;
-
       conn.ev.on("messages.upsert", async ev => {
         for (const m of ev.messages) {
           try {
-            // A) REACCIONES 👍 / ❤️
             if (m.message?.reactionMessage) {
               const { key: reactKey, text: emoji } = m.message.reactionMessage;
               const job = pendingXNXX[reactKey.id];
               if (job) {
                 const asDoc = emoji === "❤️";
-
-                // ✅ volver a poner: reacción + texto "descargando..."
-                await conn.sendMessage(job.chatId, {
-                  react: { text: asDoc ? "📁" : "🎬", key: m.key }
-                });
-                await conn.sendMessage(job.chatId, {
-                  text: `⏳ Descargando video${asDoc ? " en documento" : ""}…`
-                }, { quoted: job.quotedBase });
-
+                await conn.sendMessage(job.chatId, { react: { text: asDoc ? "📁" : "🎬", key: m.key } });
+                await conn.sendMessage(job.chatId, { text: `⏳ Descargando video${asDoc ? " en documento" : ""}…` }, { quoted: job.quotedBase });
                 await sendXnxx(conn, job, asDoc);
                 delete pendingXNXX[reactKey.id];
-
                 await conn.sendMessage(job.chatId, { react: { text: "✅", key: m.key } });
               }
             }
 
-            // B) RESPUESTAS 1/2
             const ctx = m.message?.extendedTextMessage?.contextInfo;
             const replyTo = ctx?.stanzaId;
-
-            const textLow =
-              (m.message?.conversation ||
-               m.message?.extendedTextMessage?.text ||
-               "").trim().toLowerCase();
+            const textLow = (m.message?.conversation || m.message?.extendedTextMessage?.text || "").trim().toLowerCase();
 
             if (replyTo && pendingXNXX[replyTo]) {
               const job = pendingXNXX[replyTo];
-
               if (textLow === "1" || textLow === "2") {
                 const asDoc = textLow === "2";
-
-                // ✅ volver a poner: reacción + texto "descargando..."
-                await conn.sendMessage(job.chatId, {
-                  react: { text: asDoc ? "📁" : "🎬", key: m.key }
-                });
-                await conn.sendMessage(job.chatId, {
-                  text: `⏳ Descargando video${asDoc ? " en documento" : ""}…`
-                }, { quoted: job.quotedBase });
-
+                await conn.sendMessage(job.chatId, { react: { text: asDoc ? "📁" : "🎬", key: m.key } });
+                await conn.sendMessage(job.chatId, { text: `⏳ Descargando video${asDoc ? " en documento" : ""}…` }, { quoted: job.quotedBase });
                 await sendXnxx(conn, job, asDoc);
                 delete pendingXNXX[replyTo];
-
                 await conn.sendMessage(job.chatId, { react: { text: "✅", key: m.key } });
               } else {
-                await conn.sendMessage(job.chatId, {
-                  text: "⚠️ Responde con *1* (video) o *2* (documento), o reacciona con 👍 / ❤️."
-                }, { quoted: job.quotedBase });
+                await conn.sendMessage(job.chatId, { text: "⚠️ Responde con *1* (video) o *2* (documento), o reacciona con 👍 / ❤️." }, { quoted: job.quotedBase });
               }
             }
-          } catch (e) {
-            console.error("XNXX listener error:", e);
-          }
+          } catch (e) { console.error("XNXX listener error:", e); }
         }
       });
     }
 
   } catch (err) {
     console.error("❌ Error en xnxx:", err?.message || err);
-    await conn.sendMessage(chatId, {
-      text: `❌ *Error:* ${err?.message || "Fallo al procesar el video de XNXX."}`
-    }, { quoted: msg });
+    await conn.sendMessage(chatId, { text: `❌ *Error:* ${err?.message || "Fallo al procesar el video de XNXX."}` }, { quoted: msg });
     await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
   }
 };
 
-// ✅ Envía el archivo según opción
 async function sendXnxx(conn, job, asDocument){
   const { chatId, url, caption, quotedBase } = job;
-
   if (asDocument) {
-    await conn.sendMessage(chatId, {
-      document: { url },
-      mimetype: "video/mp4",
-      fileName: `xnxx-${Date.now()}.mp4`,
-      caption
-    }, { quoted: quotedBase });
+    await conn.sendMessage(chatId, { document: { url }, mimetype: "video/mp4", fileName: `xnxx-${Date.now()}.mp4`, caption }, { quoted: quotedBase });
   } else {
-    await conn.sendMessage(chatId, {
-      video: { url },
-      mimetype: "video/mp4",
-      caption
-    }, { quoted: quotedBase });
+    await conn.sendMessage(chatId, { video: { url }, mimetype: "video/mp4", caption }, { quoted: quotedBase });
   }
 }
 
 handler.command = ["xnxx","x"];
 handler.help = ["xnxx <url>", "x <url>"];
-handler.tags = ["descargas", "nsfw"]; // opcional: tag nsfw si tienes filtro
+handler.tags = ["descargas", "nsfw"];
 handler.register = true;
 
 module.exports = handler;
