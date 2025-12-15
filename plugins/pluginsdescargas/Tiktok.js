@@ -2,7 +2,7 @@
 // comandos/tt.js — TikTok con opciones (👍 video / ❤️ documento o 1 / 2)
 const axios = require("axios");
 
-const API_BASE = process.env.API_BASE || "https://api-sky-test.ultraplus.click";
+const API_BASE = process.env.API_BASE || "https://api-sky.ultraplus.click";
 const API_KEY  = process.env.API_KEY  || "Russellxz";
 const MAX_TIMEOUT = 25000;
 
