@@ -1,3 +1,4 @@
+
 "use strict";
 
 const axios = require("axios");
@@ -13,62 +14,63 @@ module.exports = async (msg, { conn, args }) => {
   if (!url) {
     return conn.sendMessage(
       chatId,
-      { text: "✳️ Usa: .ttt <url tiktok>\nEj: .ttt https://www.tiktok.com/t/XXXX" },
+      { text: "✳️ Usa: .tt <url>\nEj: .tt https://www.tiktok.com/t/XXXX" },
       { quoted: msg }
     );
   }
 
+  if (!/^https?:\/\//i.test(url) || !/tiktok\.com|vm\.tiktok\.com/i.test(url)) {
+    return conn.sendMessage(chatId, { text: "❌ Link inválido de TikTok." }, { quoted: msg });
+  }
+
   try {
-    const r = await axios.post(
+    await conn.sendMessage(chatId, { react: { text: "⏳", key: msg.key } });
+
+    const { data } = await axios.post(
       ENDPOINT,
       { url },
       {
         timeout: TIMEOUT,
-        maxRedirects: 0,          // ✅ IMPORTANTE: no seguir 302 a /login
-        validateStatus: () => true,
         headers: {
           "Content-Type": "application/json",
           "Accept": "application/json",
           apikey: API_KEY,
           Authorization: `Bearer ${API_KEY}`,
-          "User-Agent": "Mozilla/5.0",
         },
+        validateStatus: () => true,
       }
     );
 
-    const ct = (r.headers?.["content-type"] || "").toString();
-    const loc = (r.headers?.location || "").toString();
+    if (!data || data.status !== true) {
+      throw new Error(data?.message || data?.error || "Respuesta inválida de la API");
+    }
 
-    let body = r.data;
-    if (typeof body !== "string") body = JSON.stringify(body, null, 2);
+    const r = data.result || {};
+    const video = r?.media?.video;
+    if (!video) throw new Error("No vino media.video en la respuesta");
 
-    // recortar para WhatsApp
-    const out = body.length > 3200 ? body.slice(0, 3200) + "\n...\n(TRUNCADO)" : body;
+    const title = (r.title || "TikTok Video").slice(0, 80);
+    const author = r?.author?.name ? ` • ${r.author.name}` : "";
 
-    // Logs en consola
-    console.log("[TTT DEBUG] URL:", url);
-    console.log("[TTT DEBUG] HTTP:", r.status);
-    console.log("[TTT DEBUG] CT:", ct);
-    console.log("[TTT DEBUG] Location:", loc);
-    console.log("[TTT DEBUG] BODY:", r.data);
-
-    const headInfo =
-      `🧪 TikTok DEBUG (POST)\n` +
-      `HTTP: ${r.status}\n` +
-      `Content-Type: ${ct || "?"}\n` +
-      (loc ? `Redirect-Location: ${loc}\n` : "");
-
-    return conn.sendMessage(chatId, { text: headInfo + "\n" + out }, { quoted: msg });
-  } catch (e) {
-    console.log("[TTT DEBUG] ERROR:", e?.message || e);
-    return conn.sendMessage(
+    await conn.sendMessage(
       chatId,
-      { text: `❌ Error request: ${e?.message || "unknown"}` },
+      {
+        video: { url: video },
+        mimetype: "video/mp4",
+        caption: `🎬 TikTok: ${title}${author}\n🔗 ${url}`,
+      },
       { quoted: msg }
     );
+
+    await conn.sendMessage(chatId, { react: { text: "✅", key: msg.key } });
+  } catch (e) {
+    const err = e?.message || "unknown";
+    await conn.sendMessage(chatId, { text: `❌ Error: ${err}` }, { quoted: msg });
+    await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
   }
 };
 
 module.exports.command = ["ttt", "tiktoktest"];
-module.exports.help = ["ttt <url>", "tiktoktest <url>"];
+module.exports.help = ["tt <url>", "tiktok <url>"];
 module.exports.tags = ["descargas"];
+module.exports.register = true;
