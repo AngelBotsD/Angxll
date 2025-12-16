@@ -1,197 +1,191 @@
-
-// commands/twitter.js — X/Twitter interactivo (👍 normal / ❤️ documento o 1/2)
-// FIX 401: si el link requiere apikey, descargamos con axios y mandamos BUFFER.
+// commands/twitter.js — Twitter/X interactivo (👍 normal / ❤️ documento o 1/2)
+// - Descarga a buffer para evitar 401 al enviar URL directo
+// - En el resultado final muestra tu API (publicidad), no el link del tweet
 "use strict";
 
 const axios = require("axios");
 
-// === Config API ===
+// === Config API (tu API) ===
 const API_BASE = (process.env.API_BASE || "https://api-sky.ultraplus.click").replace(/\/+$/, "");
-const API_KEY  = process.env.API_KEY  || "Russellxz";
-const MAX_TIMEOUT = 30000;
+const API_KEY = process.env.API_KEY || "Russellxz";
+const ENDPOINT = `${API_BASE}/twitter`; // <-- ajusta si tu endpoint se llama distinto
 
+const MAX_TIMEOUT = 30000;
+const UA =
+  "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36";
+
+// Jobs pendientes por ID del mensaje preview
 const pendingTW = Object.create(null);
 
+function cleanOldJobs() {
+  const now = Date.now();
+  for (const k of Object.keys(pendingTW)) {
+    if (now - (pendingTW[k]?.createdAt || 0) > 15 * 60 * 1000) delete pendingTW[k];
+  }
+}
+
 async function react(conn, chatId, key, emoji) {
-  try { await conn.sendMessage(chatId, { react: { text: emoji, key } }); } catch {}
+  try {
+    await conn.sendMessage(chatId, { react: { text: emoji, key } });
+  } catch {}
 }
 
-function isValidX(url) {
-  const u = String(url || "").trim();
-  return /^https?:\/\/(www\.)?(x\.com|twitter\.com)\/[^/]+\/status\/\d+/i.test(u)
-      || /^https?:\/\/(www\.)?x\.com\/i\/status\/\d+/i.test(u);
+function normXUrl(u = "") {
+  const url = String(u || "").trim();
+  if (!url) return "";
+  // acepta x.com o twitter.com
+  if (!/^https?:\/\//i.test(url)) return "";
+  const m =
+    url.match(/(https:\/\/x\.com\/[^\/]+\/status\/\d+)/i) ||
+    url.match(/(https:\/\/twitter\.com\/[^\/]+\/status\/\d+)/i);
+  return m ? m[1] : url;
 }
 
-async function getTwitterFromSky(url) {
-  const endpoint = `${API_BASE}/twitter`;
+function fmtDate(d) {
+  if (!d) return "—";
+  try {
+    const dt = new Date(d);
+    if (Number.isNaN(dt.getTime())) return String(d);
+    return dt.toUTCString();
+  } catch {
+    return String(d);
+  }
+}
 
-  const { data: res, status: http } = await axios.post(
-    endpoint,
+function pickBestMedia(mediaArr = []) {
+  if (!Array.isArray(mediaArr) || !mediaArr.length) return null;
+  // prioriza video
+  const v = mediaArr.find((m) => (m?.type || "").toLowerCase().includes("video"));
+  return v || mediaArr[0];
+}
+
+async function getTwitterFromApi(url) {
+  // Tu API debe devolver algo tipo:
+  // { status:true, result:{ authorName, authorUsername, likes, replies, retweets, date, media:[{url,type}] } }
+  // o directo el output del scraper: { found:true, media:[...], authorName,... }
+  const { data, status } = await axios.post(
+    ENDPOINT,
     { url },
     {
       headers: {
         apikey: API_KEY,
         Authorization: `Bearer ${API_KEY}`,
         "Content-Type": "application/json",
+        "User-Agent": UA,
       },
       timeout: MAX_TIMEOUT,
       validateStatus: () => true,
     }
   );
 
-  let data = res;
-  if (typeof data === "string") {
-    try { data = JSON.parse(data.trim()); } catch { throw new Error("Respuesta no JSON del servidor"); }
+  let j = data;
+  if (typeof j === "string") {
+    try {
+      j = JSON.parse(j.trim());
+    } catch {
+      throw new Error("Respuesta no JSON del servidor");
+    }
   }
 
-  const ok = data?.status === true || data?.status === "true";
-  if (!ok) throw new Error(data?.message || data?.error || `HTTP ${http}`);
+  // Soporta varias formas
+  const ok = j?.status === true || j?.found === true || j?.success === true;
+  if (!ok) {
+    const msg = j?.message || j?.error || `HTTP ${status}`;
+    throw new Error(msg);
+  }
 
-  const r = data.result || {};
-  const best = r?.media?.best || r?.media?.items?.[0];
-  if (!best) throw new Error("No se encontró media.");
+  const r = j.result || j;
 
-  // Intentamos agarrar un link directo si existe (sin auth)
-  const direct =
-    best?.url ||
-    best?.direct ||
-    best?.link ||
-    best?.media_url ||
-    null;
-
-  const proxyInline = best?.proxy?.inline || null;
-  const proxyDownload = best?.proxy?.download || proxyInline;
-
-  if (!direct && !proxyInline) throw new Error("No se encontró enlace descargable.");
-
-  const type = best.type === "video" ? "video" : "image";
+  const media = r.media || r.result?.media || [];
+  const best = pickBestMedia(media);
+  if (!best?.url) throw new Error("No se encontró media en el tweet.");
 
   return {
-    type,
-    direct,                  // puede ser null
-    proxyInline,             // puede ser null
-    proxyDownload,           // puede ser null
-    author: r.author || {},
-    stats: r.stats || {},
-    date: r.date || "",
-    text: r.text || "",
-    sourceUrl: r.url || url,
+    authorName: r.authorName || r.user_name || r.author?.name || "—",
+    authorUsername: r.authorUsername || r.user_screen_name || r.author?.username || "",
+    likes: Number(r.likes || 0),
+    replies: Number(r.replies || 0),
+    retweets: Number(r.retweets || 0),
+    date: r.date || r.created_at || "",
+    mediaBest: { url: best.url, type: best.type || "" },
   };
 }
 
-async function fetchBuffer(url, useAuthHeaders) {
-  const headers = useAuthHeaders
-    ? { apikey: API_KEY, Authorization: `Bearer ${API_KEY}` }
-    : {};
-
-  const r = await axios.get(url, {
+async function downloadBuffer(url) {
+  const resp = await axios.get(url, {
     responseType: "arraybuffer",
     timeout: MAX_TIMEOUT,
-    headers,
+    headers: {
+      "User-Agent": UA,
+      Referer: "https://x.com/",
+      Accept: "*/*",
+    },
     validateStatus: () => true,
   });
 
-  if (r.status >= 400) {
-    throw new Error(`HTTP ${r.status}`);
+  if (resp.status >= 400) {
+    throw new Error(`Upstream ${resp.status} al bajar media`);
   }
-  const ct = String(r.headers["content-type"] || "");
-  return { buffer: Buffer.from(r.data), contentType: ct };
+  return Buffer.from(resp.data);
+}
+
+function guessMime(type, url) {
+  const t = String(type || "").toLowerCase();
+  const u = String(url || "").toLowerCase();
+
+  if (t.includes("video") || u.includes(".mp4")) return "video/mp4";
+  if (t.includes("gif")) return "video/mp4"; // muchos gifs vienen como mp4
+  if (t.includes("photo") || t.includes("image") || u.includes(".jpg") || u.includes(".jpeg"))
+    return "image/jpeg";
+  if (u.includes(".png")) return "image/png";
+  return "application/octet-stream";
 }
 
 async function sendMedia(conn, job, asDocument, triggerMsg) {
-  const { chatId, type, direct, proxyInline, proxyDownload, caption, previewKey, quotedBase } = job;
-
-  const isVideo = type === "video";
-  const mimetype = isVideo ? "video/mp4" : "image/jpeg";
-  const ext = isVideo ? "mp4" : "jpg";
+  const { chatId, mediaUrl, mediaType, caption, previewKey, quotedBase } = job;
 
   try {
     await react(conn, chatId, triggerMsg.key, asDocument ? "📁" : "🎬");
     await react(conn, chatId, previewKey, "⏳");
 
-    // 1) Intento: mandar URL directa (si existe)
-    const urlTry = direct || proxyInline;
-    if (urlTry) {
-      try {
-        if (asDocument) {
-          await conn.sendMessage(
-            chatId,
-            {
-              document: { url: urlTry },
-              mimetype,
-              fileName: `twitter-${Date.now()}.${ext}`,
-              caption,
-            },
-            { quoted: quotedBase || triggerMsg }
-          );
-        } else {
-          if (isVideo) {
-            await conn.sendMessage(
-              chatId,
-              { video: { url: urlTry }, mimetype: "video/mp4", caption },
-              { quoted: quotedBase || triggerMsg }
-            );
-          } else {
-            await conn.sendMessage(
-              chatId,
-              { image: { url: urlTry }, caption },
-              { quoted: quotedBase || triggerMsg }
-            );
-          }
-        }
+    const buf = await downloadBuffer(mediaUrl);
+    const mimetype = guessMime(mediaType, mediaUrl);
 
-        await react(conn, chatId, previewKey, "✅");
-        await react(conn, chatId, triggerMsg.key, "✅");
-        return;
-      } catch (e) {
-        // Si falla (401 típico), caemos al plan Buffer
-      }
-    }
+    // Decide si es video o imagen
+    const isVideo = mimetype.startsWith("video/");
+    const isImage = mimetype.startsWith("image/");
 
-    // 2) Fallback: descargar como BUFFER y enviar
-    // Preferimos direct (sin headers). Si no hay, usamos proxy (con headers).
-    let bufRes = null;
+    const fileNameBase = `twitter-${Date.now()}`;
+    const fileName =
+      isVideo ? `${fileNameBase}.mp4` : isImage ? `${fileNameBase}.jpg` : `${fileNameBase}.bin`;
 
-    if (direct) {
-      try {
-        bufRes = await fetchBuffer(direct, false);
-      } catch {}
-    }
-
-    if (!bufRes && proxyDownload) {
-      bufRes = await fetchBuffer(proxyDownload, true); // aquí sí metemos apikey
-    }
-
-    if (!bufRes) throw new Error("No se pudo descargar el archivo.");
-
-    const mediaBuffer = bufRes.buffer;
-
-    if (asDocument) {
-      await conn.sendMessage(
-        chatId,
-        {
-          document: mediaBuffer,
+    const payload = asDocument
+      ? {
+          document: buf,
           mimetype,
-          fileName: `twitter-${Date.now()}.${ext}`,
+          fileName,
           caption,
-        },
-        { quoted: quotedBase || triggerMsg }
-      );
-    } else {
-      if (isVideo) {
-        await conn.sendMessage(
-          chatId,
-          { video: mediaBuffer, mimetype: "video/mp4", caption },
-          { quoted: quotedBase || triggerMsg }
-        );
-      } else {
-        await conn.sendMessage(
-          chatId,
-          { image: mediaBuffer, caption },
-          { quoted: quotedBase || triggerMsg }
-        );
-      }
-    }
+        }
+      : isVideo
+      ? {
+          video: buf,
+          mimetype,
+          caption,
+        }
+      : isImage
+      ? {
+          image: buf,
+          mimetype,
+          caption,
+        }
+      : {
+          document: buf,
+          mimetype,
+          fileName,
+          caption,
+        };
+
+    await conn.sendMessage(chatId, payload, { quoted: quotedBase || triggerMsg });
 
     await react(conn, chatId, previewKey, "✅");
     await react(conn, chatId, triggerMsg.key, "✅");
@@ -213,15 +207,16 @@ module.exports = async (msg, { conn, args }) => {
   if (!text) {
     return conn.sendMessage(
       chatId,
-      { text: `✳️ Usa:\n.tw <enlace>\nEj: .tw https://x.com/user/status/123` },
+      { text: `✳️ Usa:\n.tw <link de X/Twitter>\nEj: .tw https://x.com/user/status/123` },
       { quoted: msg }
     );
   }
 
-  if (!isValidX(text)) {
+  const url = normXUrl(text);
+  if (!url || !/\/\/(x|twitter)\.com/i.test(url)) {
     return conn.sendMessage(
       chatId,
-      { text: `❌ Enlace inválido.\nUsa un link tipo:\nhttps://x.com/usuario/status/123` },
+      { text: `❌ Enlace inválido.\nUsa un link de X/Twitter tipo:\nhttps://x.com/user/status/123` },
       { quoted: msg }
     );
   }
@@ -229,14 +224,9 @@ module.exports = async (msg, { conn, args }) => {
   try {
     await react(conn, chatId, msg.key, "⏳");
 
-    const d = await getTwitterFromSky(text);
+    const d = await getTwitterFromApi(url);
 
-    const authorName = d.author?.name || "X";
-    const username = d.author?.username ? `@${String(d.author.username).replace(/^@/, "")}` : "";
-    const likes = Number(d.stats?.likes || 0);
-    const replies = Number(d.stats?.replies || 0);
-    const retweets = Number(d.stats?.retweets || 0);
-
+    const username = d.authorUsername ? `@${String(d.authorUsername).replace(/^@/, "")}` : "";
     const captionPreview =
 `⚡ 𝗧𝘄𝗶𝘁𝘁𝗲𝗿/𝗫 — 𝗼𝗽𝗰𝗶𝗼𝗻𝗲𝘀
 
@@ -244,52 +234,55 @@ module.exports = async (msg, { conn, args }) => {
 ❤️ Enviar como documento
 — o responde: 1 = normal · 2 = documento
 
-✦ 𝗔𝘂𝘁𝗼𝗿: ${authorName} ${username}
-✦ 𝗘𝘀𝘁𝗮𝗱𝘀: ❤️ ${likes} · 💬 ${replies} · 🔁 ${retweets}
-${d.date ? `✦ 𝗙𝗲𝗰𝗵𝗮: ${d.date}` : ""}`.trim();
+✦ 𝗔𝘂𝘁𝗼𝗿: ${d.authorName} ${username}
+✦ 𝗘𝘀𝘁𝗮𝗱𝘀: ❤️ ${d.likes} · 💬 ${d.replies} · 🔁 ${d.retweets}
+✦ 𝗙𝗲𝗰𝗵𝗮: ${fmtDate(d.date)}`;
 
-    const preview = await conn.sendMessage(chatId, { text: captionPreview }, { quoted: msg });
+    // preview (si es imagen, mandamos imagen con caption para que se vea bonito)
+    let preview;
+    const previewIsImage = guessMime(d.mediaBest.type, d.mediaBest.url).startsWith("image/");
+    if (previewIsImage) {
+      preview = await conn.sendMessage(chatId, { image: { url: d.mediaBest.url }, caption: captionPreview }, { quoted: msg });
+    } else {
+      preview = await conn.sendMessage(chatId, { text: captionPreview }, { quoted: msg });
+    }
 
     pendingTW[preview.key.id] = {
       chatId,
-      type: d.type,
-      direct: d.direct,
-      proxyInline: d.proxyInline,
-      proxyDownload: d.proxyDownload,
+      mediaUrl: d.mediaBest.url,
+      mediaType: d.mediaBest.type,
+      previewKey: preview.key,
+      quotedBase: msg,
+      createdAt: Date.now(),
+      processing: false,
       caption:
 `✅ 𝗧𝘄𝗶𝘁𝘁𝗲𝗿/𝗫 — 𝗹𝗶𝘀𝘁𝗼
 
-✦ 𝗔𝘂𝘁𝗼𝗿: ${authorName} ${username}
-✦ 𝗟𝗶𝗻𝗸: ${d.sourceUrl}
+✦ 𝗔𝘂𝘁𝗼𝗿: ${d.authorName} ${username}
+✦ 𝗔𝗣𝗜: ${ENDPOINT}
 
 🤖 𝙎𝙪𝙠𝙞 𝘽𝙤𝙩`,
-      quotedBase: msg,
-      previewKey: preview.key,
-      createdAt: Date.now(),
-      processing: false,
     };
 
     await react(conn, chatId, msg.key, "✅");
 
-    if (!conn._twInteractiveListener) {
-      conn._twInteractiveListener = true;
+    // Listener único
+    if (!conn._twitterInteractiveListener) {
+      conn._twitterInteractiveListener = true;
 
       conn.ev.on("messages.upsert", async (ev) => {
         for (const m of ev.messages) {
           try {
-            // limpiar jobs viejos (15 min)
-            for (const k of Object.keys(pendingTW)) {
-              if (Date.now() - (pendingTW[k]?.createdAt || 0) > 15 * 60 * 1000) delete pendingTW[k];
-            }
+            cleanOldJobs();
 
-            // Reacción (👍 / ❤️)
+            // --- Reacciones (👍 / ❤️) al preview ---
             if (m.message?.reactionMessage) {
               const { key: reactKey, text: emoji } = m.message.reactionMessage;
               const job = pendingTW[reactKey.id];
               if (!job) continue;
               if (job.chatId !== m.key.remoteJid) continue;
-              if (emoji !== "👍" && emoji !== "❤️") continue;
 
+              if (emoji !== "👍" && emoji !== "❤️") continue;
               if (job.processing) continue;
               job.processing = true;
 
@@ -298,9 +291,10 @@ ${d.date ? `✦ 𝗙𝗲𝗰𝗵𝗮: ${d.date}` : ""}`.trim();
               continue;
             }
 
-            // Reply 1/2
+            // --- Replies 1/2 citando el preview ---
             const ctx = m.message?.extendedTextMessage?.contextInfo;
             const replyTo = ctx?.stanzaId;
+
             const body =
               (m.message?.conversation ||
                 m.message?.extendedTextMessage?.text ||
@@ -309,8 +303,8 @@ ${d.date ? `✦ 𝗙𝗲𝗰𝗵𝗮: ${d.date}` : ""}`.trim();
             if (replyTo && pendingTW[replyTo]) {
               const job = pendingTW[replyTo];
               if (job.chatId !== m.key.remoteJid) continue;
-              if (body !== "1" && body !== "2") continue;
 
+              if (body !== "1" && body !== "2") continue;
               if (job.processing) continue;
               job.processing = true;
 
@@ -324,13 +318,21 @@ ${d.date ? `✦ 𝗙𝗲𝗰𝗵𝗮: ${d.date}` : ""}`.trim();
       });
     }
   } catch (err) {
-    console.error("❌ Error Twitter:", err?.message || err);
-    await conn.sendMessage(chatId, { text: `❌ Error: ${err?.message || "unknown"}` }, { quoted: msg });
+    console.error("❌ Error Twitter/X:", err?.message || err);
+
+    let msgTxt = "❌ Ocurrió un error al procesar el link de Twitter/X.";
+    const s = String(err?.message || "");
+
+    if (/api key|unauthorized|forbidden|401/i.test(s)) msgTxt = "🔐 API Key inválida o sin permisos (401).";
+    else if (/timeout|timed out|502|upstream/i.test(s)) msgTxt = "⚠️ Timeout o error del servidor.";
+    else if (/no media/i.test(s)) msgTxt = "⚠️ No se encontró media en ese tweet.";
+
+    await conn.sendMessage(chatId, { text: msgTxt }, { quoted: msg });
     await react(conn, chatId, msg.key, "❌");
   }
 };
 
-module.exports.command = ["twitter", "tw", "xdl", "x"];
-module.exports.help = ["tw <url>"];
+module.exports.command = ["tw", "twitter", "x"];
+module.exports.help = ["tw <url>", "twitter <url>", "x <url>"];
 module.exports.tags = ["descargas"];
 module.exports.register = true;
