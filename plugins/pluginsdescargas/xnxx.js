@@ -278,7 +278,7 @@ module.exports = async (msg, { conn, args }) => {
   }
 };
 
-module.exports.command = ["xnxx", "x"];
+module.exports.command = ["xnxx", "xx"];
 module.exports.help = ["xnxx <url>", "x <url>"];
 module.exports.tags = ["descargas", "nsfw"];
 module.exports.register = true;
