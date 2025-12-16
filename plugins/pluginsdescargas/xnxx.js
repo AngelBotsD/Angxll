@@ -1,4 +1,5 @@
-// commands/xnxx.js — XNXX interactivo (👍 normal / ❤️ documento o 1/2) usando tu API nueva
+
+// commands/xnxx.js — XNXX/TXNHH interactivo (👍 normal / ❤️ documento o 1/2) usando tu API
 "use strict";
 
 const axios = require("axios");
@@ -9,13 +10,53 @@ const API_KEY  = process.env.API_KEY || "Russellxz";
 
 const MAX_TIMEOUT = 25000;
 
+// ---- helpers ----
 const fmtSec = (s) => {
   const n = Number(s || 0);
+  if (!Number.isFinite(n) || n <= 0) return "—";
   const h = Math.floor(n / 3600);
   const m = Math.floor((n % 3600) / 60);
-  const sec = n % 60;
-  return (h ? `\( {h}:` : "") + ` \){m.toString().padStart(2,"0")}:${sec.toString().padStart(2,"0")}`;
+  const sec = Math.floor(n % 60);
+  return h
+    ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+    : `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 };
+
+function safeFileBase(title, def = "xnxx") {
+  const base = String(title || def).slice(0, 70);
+  const safe = base.replace(/[^A-Za-z0-9_\-.]+/g, "_");
+  return safe || def;
+}
+
+function normalizeInputUrl(raw) {
+  let t = String(raw || "").trim();
+  if (!t) return "";
+  // si pegan www. sin protocolo
+  if (!/^https?:\/\//i.test(t) && /^www\./i.test(t)) t = "https://" + t;
+  return t;
+}
+
+function isSupportedHost(hostname) {
+  const host = String(hostname || "").toLowerCase();
+
+  // XNXX de cualquier país (xnxx.es, xnxx.com, xnxx.xxx, etc)
+  const isXNXX = host.includes("xnxx.");
+
+  // TXNHH
+  const isTXNHH = host === "txnhh.com" || host.endsWith(".txnhh.com");
+
+  return isXNXX || isTXNHH;
+}
+
+function isSupportedUrl(u) {
+  try {
+    const url = new URL(u);
+    if (!/^https?:$/i.test(url.protocol)) return false;
+    return isSupportedHost(url.hostname);
+  } catch {
+    return false;
+  }
+}
 
 // Jobs pendientes por ID del mensaje preview
 const pendingXNXX = Object.create(null);
@@ -43,7 +84,8 @@ async function getXnxxFromSky(url){
 
   let data = res;
   if (typeof data === "string") {
-    try { data = JSON.parse(data.trim()); } catch { throw new Error("Respuesta no JSON del servidor"); }
+    try { data = JSON.parse(data.trim()); }
+    catch { throw new Error("Respuesta no JSON del servidor"); }
   }
 
   const ok = data?.status === true || data?.status === "true";
@@ -54,7 +96,7 @@ async function getXnxxFromSky(url){
   if (!videoUrl) throw new Error("No se encontró video descargable.");
 
   return {
-    title: r.title || "XNXX Video",
+    title: r.title || "Video",
     duration: r.duration || 0,
     video: videoUrl,
     cover: r.cover || null,
@@ -62,7 +104,7 @@ async function getXnxxFromSky(url){
 }
 
 async function sendVideo(conn, job, asDocument, triggerMsg) {
-  const { chatId, url, caption, previewKey, quotedBase } = job;
+  const { chatId, url, caption, previewKey, quotedBase, fileBase } = job;
 
   try {
     await react(conn, chatId, triggerMsg.key, asDocument ? "📁" : "🎬");
@@ -73,7 +115,7 @@ async function sendVideo(conn, job, asDocument, triggerMsg) {
       {
         [asDocument ? "document" : "video"]: { url },
         mimetype: "video/mp4",
-        fileName: asDocument ? `xnxx-${Date.now()}.mp4` : undefined,
+        fileName: asDocument ? `${fileBase}-${Date.now()}.mp4` : undefined,
         caption: asDocument ? caption : undefined,
       },
       { quoted: quotedBase || triggerMsg }
@@ -92,24 +134,30 @@ async function sendVideo(conn, job, asDocument, triggerMsg) {
   }
 }
 
-module.exports = async (msg, { conn, args, command }) => {
+module.exports = async (msg, { conn, args }) => {
   const chatId = msg.key.remoteJid;
-  let text = (args.join(" ") || "").trim();
+  let text = normalizeInputUrl(args.join(" "));
 
   if (!text) {
     return conn.sendMessage(
       chatId,
       { 
-        text: `✳️ Usa:\n.xnxx <enlace> o .x <enlace>\nEj: .xnxx https://www.xnxx.com/video-xxxxx/titulo` 
+        text:
+`✳️ Usa:
+.xnxx <enlace> o .x <enlace>
+
+✅ Acepta:
+- XNXX (cualquier país): https://www.xnxx.es/video-xxxx/...
+- TXNHH: https://www.txnhh.com/video-xxxx/...`
       },
       { quoted: msg }
     );
   }
 
-  if (!/^https?:\/\//i.test(text) || !/xnxx\./i.test(text)) {
+  if (!isSupportedUrl(text)) {
     return conn.sendMessage(
       chatId,
-      { text: `❌ Enlace inválido.\nUsa: .xnxx <url de XNXX> o .x <url de XNXX>` },
+      { text: `❌ Enlace inválido.\nUsa un link de XNXX (cualquier país) o TXNHH.` },
       { quoted: msg }
     );
   }
@@ -119,11 +167,11 @@ module.exports = async (msg, { conn, args, command }) => {
 
     const d = await getXnxxFromSky(text);
 
-    const title   = d.title || "XNXX Video";
+    const title   = d.title || "Video";
     const durTxt  = d.duration ? fmtSec(d.duration) : "—";
 
     const caption =
-`⚡ 𝗫𝗡𝗫𝗫 — 𝗼𝗽𝗰𝗶𝗼𝗻𝗲𝘀 ⚠️ +18
+`⚡ 𝗫𝗡𝗫𝗫/𝗧𝗫𝗡𝗛𝗛 — 𝗼𝗽𝗰𝗶𝗼𝗻𝗲𝘀 ⚠️ +18
 
 👍 Enviar normal
 ❤️ Enviar como documento
@@ -134,10 +182,14 @@ module.exports = async (msg, { conn, args, command }) => {
 
     const preview = await conn.sendMessage(chatId, { text: caption }, { quoted: msg });
 
+    const fileBase = safeFileBase(title, "xnxx");
+
     pendingXNXX[preview.key.id] = {
       chatId,
       url: d.video,
-      caption: `⚡ 𝗫𝗡𝗫𝗫 — 𝘃𝗶𝗱𝗲𝗼 𝗹𝗶𝘀𝘁𝗼 ⚠️ +18
+      fileBase,
+      caption:
+`⚡ 𝗫𝗡𝗫𝗫/𝗧𝗫𝗡𝗛𝗛 — 𝘃𝗶𝗱𝗲𝗼 𝗹𝗶𝘀𝘁𝗼 ⚠️ +18
 
 ✦ 𝗧𝗶́𝘁𝘂𝗹𝗼: ${title}
 ✦ 𝗗𝘂𝗿𝗮𝗰𝗶𝗼́𝗻: ${durTxt}
@@ -174,7 +226,6 @@ module.exports = async (msg, { conn, args, command }) => {
               if (job.chatId !== m.key.remoteJid) continue;
 
               if (emoji !== "👍" && emoji !== "❤️") continue;
-
               if (job.processing) continue;
               job.processing = true;
 
@@ -199,7 +250,6 @@ module.exports = async (msg, { conn, args, command }) => {
               if (job.chatId !== m.key.remoteJid) continue;
 
               if (body !== "1" && body !== "2") continue;
-
               if (job.processing) continue;
               job.processing = true;
 
@@ -216,9 +266,9 @@ module.exports = async (msg, { conn, args, command }) => {
     }
 
   } catch (err) {
-    console.error("❌ Error XNXX:", err?.message || err);
+    console.error("❌ Error XNXX/TXNHH:", err?.message || err);
 
-    let msgTxt = "❌ Ocurrió un error al procesar el video de XNXX.";
+    let msgTxt = "❌ Ocurrió un error al procesar el video.";
     const s = String(err?.message || "");
     if (/api key|unauthorized|forbidden|401/i.test(s)) msgTxt = "🔐 API Key inválida o ausente.";
     else if (/timeout|timed out|502|upstream/i.test(s)) msgTxt = "⚠️ Timeout o error del servidor.";
