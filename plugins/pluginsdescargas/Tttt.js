@@ -5,7 +5,7 @@
 const axios = require("axios");
 
 const API_URL = "https://api-sky-test.ultraplus.click/tiktok";
-const API_KEY = "Russellxz";
+const API_KEY = "Russellx";
 const TIMEOUT = 30000;
 
 // 🔥 Log bonito
