@@ -3,7 +3,7 @@
 
 const axios = require("axios");
 
-const ENDPOINT = "https://api-sky-test.ultraplus.click/tiktok";
+const ENDPOINT = "https://api-sky.ultraplus.click/tiktok";
 const API_KEY = "Russellxz";
 const TIMEOUT = 25000;
 
