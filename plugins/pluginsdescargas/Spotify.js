@@ -1,9 +1,7 @@
-// commands/spotify.js — Spotify interactivo
-// ✅ Reacciones: 👍 (Audio) / ❤️ (Documento) o Respuestas 1 / 2
-// ✅ Mensaje de espera: "Descargando su canción..."
-// ✅ Branding: La Suki Bot + Link API
-// ✅ Multiuso: No se borra al instante (10 min activo)
 
+
+
+// commands/spotify.js — Spotify interactivo (👍 audio normal / ❤️ documento o 1/2)
 "use strict";
 
 const axios = require("axios");
@@ -11,20 +9,15 @@ const axios = require("axios");
 // === Config API ===
 const API_BASE = (process.env.API_BASE || "https://api-sky.ultraplus.click").replace(/\/+$/, "");
 const API_KEY  = process.env.API_KEY || "Russellxz";
-const MAX_TIMEOUT = 60000; // 60s
+const MAX_TIMEOUT = 30000;
 
-// Jobs pendientes
+// Jobs pendientes por ID del mensaje preview
 const pendingSPOTIFY = Object.create(null);
 
 async function react(conn, chatId, key, emoji) {
   try { await conn.sendMessage(chatId, { react: { text: emoji, key } }); } catch {}
 }
 
-function safeBaseFromTitle(title) {
-  return String(title || "spotify").slice(0, 70).replace(/[^A-Za-z0-9_\-.]+/g, "_");
-}
-
-// 1. OBTENER INFO (POST /spotify)
 async function getSpotifyMp3(input) {
   const endpoint = `${API_BASE}/spotify`;
 
@@ -58,46 +51,33 @@ async function getSpotifyMp3(input) {
 
   const title = data.result?.title || "Spotify Track";
   const artist = data.result?.artist || "Desconocido";
-  const thumbnail = data.result?.thumbnail || data.result?.image || "";
 
-  return { mp3Url, title, artist, thumbnail };
+  return { mp3Url, title, artist };
 }
 
-// 2. ENVIAR AUDIO
 async function sendAudio(conn, job, asDocument, triggerMsg) {
-  job.isBusy = true;
   const { chatId, mp3Url, title, artist, previewKey, quotedBase } = job;
 
   try {
-    // Feedback visual
     await react(conn, chatId, triggerMsg.key, asDocument ? "📁" : "🎵");
-    await conn.sendMessage(chatId, { text: "⏳ Espere, descargando su canción..." }, { quoted: quotedBase });
+    await react(conn, chatId, previewKey, "⏳");
 
-    // Caption con Branding
-    const finalCaption = 
-`🎵 𝗧𝗶𝘁𝘂𝗹𝗼: ${title}
-👤 𝗔𝗿𝘁𝗶𝘀𝘁𝗮: ${artist}
-
-🤖 𝗕𝗼𝘁: La Suki Bot
-🔗 𝗔𝗣𝗜: https://api-sky.ultraplus.click`;
+    const caption = asDocument ? undefined : `\( {title}\npor \){artist}`;
 
     await conn.sendMessage(
       chatId,
       {
         [asDocument ? "document" : "audio"]: { url: mp3Url },
         mimetype: "audio/mpeg",
-        fileName: asDocument ? `${safeBaseFromTitle(title)} - ${artist}.mp3` : undefined,
-        // Caption solo se muestra bien en documentos
-        caption: asDocument ? finalCaption : undefined,
+        fileName: asDocument ? `\( {safeBaseFromTitle(title)} - \){artist}.mp3` : undefined,
+        caption,
       },
       { quoted: quotedBase || triggerMsg }
     );
 
     await react(conn, chatId, previewKey, "✅");
     await react(conn, chatId, triggerMsg.key, "✅");
-
   } catch (e) {
-    console.error("Spotify Send Error:", e);
     await react(conn, chatId, previewKey, "❌");
     await react(conn, chatId, triggerMsg.key, "❌");
     await conn.sendMessage(
@@ -105,22 +85,23 @@ async function sendAudio(conn, job, asDocument, triggerMsg) {
       { text: `❌ Error enviando: ${e?.message || "unknown"}` },
       { quoted: quotedBase || triggerMsg }
     );
-  } finally {
-    job.isBusy = false; // Liberar para otra descarga
   }
 }
 
-// 3. HANDLER PRINCIPAL
+function safeBaseFromTitle(title) {
+  return String(title || "spotify").slice(0, 70).replace(/[^A-Za-z0-9_\-.]+/g, "_");
+}
+
 module.exports = async (msg, { conn, args, command }) => {
   const chatId = msg.key.remoteJid;
-  const pref = global.prefixes?.[0] || "."; 
+  const pref = global.prefixes?.[0] || "."; // prefijo real del bot
   let text = (args.join(" ") || "").trim();
 
   if (!text) {
     return conn.sendMessage(
       chatId,
       { 
-        text: `✳️ Usa:\n${pref}${command} <canción o URL>\n\nEjemplo:\n${pref}${command} bad bunny tití me preguntó` 
+        text: `✳️ Usa:\n\ .sp <canción o URL>\n\nEjemplo:\n${pref}sp bad bunny tití me preguntó` 
       },
       { quoted: msg }
     );
@@ -129,32 +110,20 @@ module.exports = async (msg, { conn, args, command }) => {
   try {
     await react(conn, chatId, msg.key, "⏱️");
 
-    // A) Obtener Info
-    const { mp3Url, title, artist, thumbnail } = await getSpotifyMp3(text);
+    const { mp3Url, title, artist } = await getSpotifyMp3(text);
 
-    // B) Mensaje de opciones
     const caption =
-`🎵 𝗦𝗽𝗼𝘁𝗶𝗳𝘆 — 𝗢𝗽𝗰𝗶𝗼𝗻𝗲𝘀
+`🎵 Spotify — opciones
 
-✦ 𝗧𝗶𝘁𝘂𝗹𝗼: ${title}
-✦ 𝗔𝗿𝘁𝗶𝘀𝘁𝗮: ${artist}
-
-Elige cómo enviarlo:
-👍 𝗔𝘂𝗱𝗶𝗼 (normal)
-❤️ 𝗔𝘂𝗱𝗶𝗼 𝗰𝗼𝗺𝗼 𝗱𝗼𝗰𝘂𝗺𝗲𝗻𝘁𝗼
+👍 Enviar audio (reproducible)
+❤️ Enviar como documento
 — o responde: 1 = audio · 2 = documento
 
-🤖 𝗕𝗼𝘁: La Suki Bot
-🔗 𝗔𝗣𝗜: https://api-sky.ultraplus.click`;
+✦ ${title}
+✦ por ${artist}`;
 
-    let preview;
-    if (thumbnail && thumbnail.startsWith("http")) {
-        preview = await conn.sendMessage(chatId, { image: { url: thumbnail }, caption }, { quoted: msg });
-    } else {
-        preview = await conn.sendMessage(chatId, { text: caption }, { quoted: msg });
-    }
+    const preview = await conn.sendMessage(chatId, { text: caption }, { quoted: msg });
 
-    // C) Guardar trabajo
     pendingSPOTIFY[preview.key.id] = {
       chatId,
       mp3Url,
@@ -162,56 +131,69 @@ Elige cómo enviarlo:
       artist,
       quotedBase: msg,
       previewKey: preview.key,
-      isBusy: false,
+      createdAt: Date.now(),
+      processing: false,
     };
-
-    // Auto-limpieza (10 min)
-    setTimeout(() => {
-        if (pendingSPOTIFY[preview.key.id]) delete pendingSPOTIFY[preview.key.id];
-    }, 10 * 60 * 1000);
 
     await react(conn, chatId, msg.key, "✅");
 
-    // D) Listener
     if (!conn._spotifyInteractiveListener) {
       conn._spotifyInteractiveListener = true;
 
       conn.ev.on("messages.upsert", async (ev) => {
         for (const m of ev.messages) {
           try {
-            // Reacciones
+            // limpiar jobs viejos (15 min)
+            for (const k of Object.keys(pendingSPOTIFY)) {
+              if (Date.now() - (pendingSPOTIFY[k]?.createdAt || 0) > 15 * 60 * 1000) {
+                delete pendingSPOTIFY[k];
+              }
+            }
+
+            // --- Reacciones (👍 / ❤️) al preview ---
             if (m.message?.reactionMessage) {
               const { key: reactKey, text: emoji } = m.message.reactionMessage;
               const job = pendingSPOTIFY[reactKey.id];
-              
-              if (!job || job.chatId !== m.key.remoteJid) continue;
+              if (!job) continue;
+              if (job.chatId !== m.key.remoteJid) continue;
+
               if (emoji !== "👍" && emoji !== "❤️") continue;
 
-              if (job.isBusy) continue;
-              
+              if (job.processing) continue;
+              job.processing = true;
+
               const asDoc = emoji === "❤️";
               await sendAudio(conn, job, asDoc, m);
+
+              delete pendingSPOTIFY[reactKey.id];
               continue;
             }
 
-            // Respuestas
+            // --- Replies 1/2 citando el preview ---
             const ctx = m.message?.extendedTextMessage?.contextInfo;
             const replyTo = ctx?.stanzaId;
+
+            const body =
+              (m.message?.conversation ||
+                m.message?.extendedTextMessage?.text ||
+                "").trim();
 
             if (replyTo && pendingSPOTIFY[replyTo]) {
               const job = pendingSPOTIFY[replyTo];
               if (job.chatId !== m.key.remoteJid) continue;
 
-              const body = (m.message?.conversation || m.message?.extendedTextMessage?.text || "").trim();
               if (body !== "1" && body !== "2") continue;
 
-              if (job.isBusy) continue;
+              if (job.processing) continue;
+              job.processing = true;
 
               const asDoc = body === "2";
               await sendAudio(conn, job, asDoc, m);
+
+              delete pendingSPOTIFY[replyTo];
             }
           } catch (e) {
-            console.error("Spotify listener error:", e);
+            console.error("Spotify listener error:", e?.message || e);
           }
         }
       });
@@ -220,7 +202,7 @@ Elige cómo enviarlo:
   } catch (err) {
     console.error("❌ Error spotify:", err?.message || err);
 
-    let msgTxt = "❌ Ocurrió un error al procesar la canción.";
+    let msgTxt = "❌ Ocurrió un error al procesar la canción de Spotify.";
     const s = String(err?.message || "");
     if (/api key|unauthorized|forbidden|401/i.test(s)) msgTxt = "🔐 API Key inválida o ausente.";
     else if (/timeout|timed out|502|upstream/i.test(s)) msgTxt = "⚠️ Timeout o error del servidor.";
@@ -234,4 +216,3 @@ module.exports.command = ["spotify", "sp"];
 module.exports.help = ["spotify <canción o url>", "sp <canción o url>"];
 module.exports.tags = ["descargas"];
 module.exports.register = true;
-
