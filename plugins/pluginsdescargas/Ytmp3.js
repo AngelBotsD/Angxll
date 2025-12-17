@@ -1,4 +1,10 @@
-// comandos/ytmp3.js — YouTube MP3 (URL) con reacciones 👍 / ❤️ o 1 / 2 usando /youtube-mp3
+
+// comandos/ytmp3.js — YouTube MP3 (URL)
+// ✅ Reacciones: 👍 (Audio) / ❤️ (Documento) o Respuestas 1 / 2
+// ✅ Muestra Banner (Thumbnail) si existe + Título
+// ✅ Multiuso: Puedes descargar varias veces (Audio y luego Doc) sin poner el comando de nuevo
+// ✅ Publicidad: Incluye link de la API
+
 "use strict";
 
 const axios = require("axios");
@@ -12,6 +18,11 @@ const pendingYTA = Object.create(null);
 
 const isYouTube = (u = "") =>
   /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)\//i.test(String(u || ""));
+
+// Helper para limpiar nombre de archivo
+function safeBaseFromTitle(title) {
+  return String(title || "youtube").slice(0, 70).replace(/[^A-Za-z0-9_\-.]+/g, "_");
+}
 
 async function getYTFromSkyAudio(url) {
   const endpoint = `${API_BASE}/youtube-mp3`;
@@ -42,14 +53,14 @@ async function getYTFromSkyAudio(url) {
   if (!ok) throw new Error(data.message || data.error || "Error en la API");
 
   const result = data.result || data.data || data;
-
   const audioSrc = result?.media?.audio;
 
   if (!audioSrc) throw new Error("No se pudo obtener audio (sin URL).");
 
   return {
-    title: result?.title || "YouTube",
-    audio: audioSrc, // acá devolvemos el link final del audio
+    title: result?.title || "YouTube Audio",
+    thumbnail: result?.thumbnail || result?.image || "", // Capturamos el banner
+    audio: audioSrc, 
   };
 }
 
@@ -61,7 +72,7 @@ module.exports = async (msg, { conn, args, command }) => {
   if (!text) {
     return conn.sendMessage(
       chatId,
-      { text: `✳️ Usa:\n\( {pref} \){command} <URL YouTube>\nEj: \( {pref} \){command} https://youtu.be/dQw4w9WgXcQ` },
+      { text: `✳️ Usa:\n${pref}${command} <URL YouTube>\nEj: ${pref}${command} https://youtu.be/dQw4w9WgXcQ` },
       { quoted: msg }
     );
   }
@@ -77,78 +88,90 @@ module.exports = async (msg, { conn, args, command }) => {
   try {
     await conn.sendMessage(chatId, { react: { text: "⏱️", key: msg.key } });
 
+    // 1. Obtener info de la API
     const d = await getYTFromSkyAudio(text);
     const title = d.title || "YouTube";
+    const thumb = d.thumbnail;
 
-    const txt =
-`⚡ 𝗬𝗼𝘂𝗧𝘂𝗯𝗲 𝗠𝗣𝟯 — 𝗼𝗽𝗰𝗶𝗼𝗻𝗲𝘀
+    // 2. Construir mensaje
+    const caption =
+`⚡ 𝗬𝗼𝘂𝗧𝘂𝗯𝗲 𝗠𝗣𝟯 — 𝗢𝗽𝗰𝗶𝗼𝗻𝗲𝘀
+
+🎵 𝗧𝗶́𝘁𝘂𝗹𝗼: ${title}
 
 Elige cómo enviarlo:
 👍 𝗔𝘂𝗱𝗶𝗼 (normal)
 ❤️ 𝗔𝘂𝗱𝗶𝗼 𝗰𝗼𝗺𝗼 𝗱𝗼𝗰𝘂𝗺𝗲𝗻𝘁𝗼
-— 𝗼 responde: 1 = audio · 2 = documento
+— o responde: 1 = audio · 2 = documento
 
-✦ 𝗧𝗶́𝘁𝘂𝗹𝗼: ${title}`;
+🔗 𝗔𝗣𝗜: https://api-sky.ultraplus.click`;
 
-    const preview = await conn.sendMessage(chatId, { text: txt }, { quoted: msg });
+    let preview;
+    
+    // Si hay imagen, mandamos imagen con caption. Si no, solo texto.
+    if (thumb && thumb.startsWith("http")) {
+        preview = await conn.sendMessage(chatId, { 
+            image: { url: thumb }, 
+            caption: caption 
+        }, { quoted: msg });
+    } else {
+        preview = await conn.sendMessage(chatId, { text: caption }, { quoted: msg });
+    }
 
+    // 3. Guardar trabajo en memoria
     pendingYTA[preview.key.id] = {
       chatId,
       audioSrc: d.audio,
       title,
       quotedBase: msg,
       previewKey: preview.key,
-      createdAt: Date.now(),
       processing: false,
     };
 
+    // 4. Auto-limpieza a los 10 minutos (para liberar memoria)
+    setTimeout(() => {
+        if (pendingYTA[preview.key.id]) {
+            delete pendingYTA[preview.key.id];
+        }
+    }, 10 * 60 * 1000);
+
     await conn.sendMessage(chatId, { react: { text: "✅", key: msg.key } });
 
+    // 5. Iniciar Listener Global (si no existe)
     if (!conn._ytaListener) {
       conn._ytaListener = true;
 
       conn.ev.on("messages.upsert", async (ev) => {
         for (const m of ev.messages) {
           try {
-            // limpiar jobs viejos (15 min)
-            for (const k of Object.keys(pendingYTA)) {
-              if (Date.now() - (pendingYTA[k]?.createdAt || 0) > 15 * 60 * 1000) {
-                delete pendingYTA[k];
-              }
-            }
-
-            // --- Reacciones (👍 / ❤️) al preview ---
+            // --- A) Reacciones (👍 / ❤️) ---
             if (m.message?.reactionMessage) {
               const { key: reactKey, text: emoji } = m.message.reactionMessage;
               const job = pendingYTA[reactKey.id];
+              
               if (!job) continue;
               if (job.chatId !== m.key.remoteJid) continue;
-
               if (emoji !== "👍" && emoji !== "❤️") continue;
 
-              if (job.processing) continue;
+              if (job.processing) continue; // Evita spam de clics
               job.processing = true;
 
               const asDoc = emoji === "❤️";
               await sendMp3(conn, job, asDoc, m);
-
-              delete pendingYTA[reactKey.id];
+              
+              // NO BORRAMOS el job aquí, para permitir cambiar de opción
               continue;
             }
 
-            // --- Replies 1/2 citando el preview ---
+            // --- B) Respuestas texto (1 / 2) ---
             const ctx = m.message?.extendedTextMessage?.contextInfo;
             const replyTo = ctx?.stanzaId;
-
-            const body =
-              (m.message?.conversation ||
-                m.message?.extendedTextMessage?.text ||
-                "").trim();
 
             if (replyTo && pendingYTA[replyTo]) {
               const job = pendingYTA[replyTo];
               if (job.chatId !== m.key.remoteJid) continue;
 
+              const body = (m.message?.conversation || m.message?.extendedTextMessage?.text || "").trim();
               if (body !== "1" && body !== "2") continue;
 
               if (job.processing) continue;
@@ -156,8 +179,8 @@ Elige cómo enviarlo:
 
               const asDoc = body === "2";
               await sendMp3(conn, job, asDoc, m);
-
-              delete pendingYTA[replyTo];
+              
+              // NO BORRAMOS el job aquí
             }
           } catch (e) {
             console.error("YTMP3 listener error:", e);
@@ -179,24 +202,33 @@ Elige cómo enviarlo:
 async function sendMp3(conn, job, asDocument, triggerMsg) {
   const { chatId, audioSrc, title, quotedBase } = job;
 
-  await conn.sendMessage(chatId, { react: { text: asDocument ? "📁" : "🎵", key: triggerMsg.key } });
-  await conn.sendMessage(chatId, { text: `⏳ Enviando audio${asDocument ? " como documento" : ""}…` }, { quoted: quotedBase });
+  try {
+      await conn.sendMessage(chatId, { react: { text: asDocument ? "📁" : "🎵", key: triggerMsg.key } });
+      
+      // Mensaje opcional de "Enviando..."
+      // await conn.sendMessage(chatId, { text: `⏳ Enviando audio${asDocument ? " como documento" : ""}…` }, { quoted: quotedBase });
 
-  await conn.sendMessage(
-    chatId,
-    {
-      [asDocument ? "document" : "audio"]: { url: audioSrc },
-      mimetype: "audio/mpeg",
-      fileName: asDocument ? `${safeBaseFromTitle(title)}.mp3` : undefined,
-    },
-    { quoted: quotedBase }
-  );
+      await conn.sendMessage(
+        chatId,
+        {
+          [asDocument ? "document" : "audio"]: { url: audioSrc },
+          mimetype: "audio/mpeg",
+          fileName: asDocument ? `${safeBaseFromTitle(title)}.mp3` : undefined,
+          // Si es audio normal (nota de voz/música), ptt=false para que sea canción
+          ptt: false 
+        },
+        { quoted: quotedBase }
+      );
 
-  await conn.sendMessage(chatId, { react: { text: "✅", key: triggerMsg.key } });
-}
+      await conn.sendMessage(chatId, { react: { text: "✅", key: triggerMsg.key } });
 
-function safeBaseFromTitle(title) {
-  return String(title || "youtube").slice(0, 70).replace(/[^A-Za-z0-9_\-.]+/g, "_");
+  } catch (e) {
+      console.error("Error enviando MP3", e);
+      await conn.sendMessage(chatId, { text: "❌ Error enviando el archivo." }, { quoted: quotedBase });
+  } finally {
+      // Liberamos el job para que puedan pedirlo de nuevo (ej: pidieron audio, ahora quieren doc)
+      job.processing = false; 
+  }
 }
 
 module.exports.command = ["ytmp3", "yta"];
