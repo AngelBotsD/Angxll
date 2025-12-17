@@ -10,15 +10,13 @@ const handler = async (msg, { conn, args }) => {
   }
 
   await conn.sendMessage(chatId, { react: { text: '⏳', key: msg.key } });
-  
-  // LOGS para debug
-  console.log("--- INICIANDO COMANDO YTMP4 ---");
-  console.log("URL recibida:", urlVideo);
 
+  console.log("--- INICIANDO COMANDO YTMP4 ---");
+  
   try {
-    const apiUrl = "https://api-sky.ultraplus.click/youtube-mp4";
-    const apiKey = "Russellxz";
-    const apiDomain = "https://api-sky.ultraplus.click"; // Base para arreglar el link
+    const apiDomain = "https://api-sky.ultraplus.click"; 
+    const apiUrl = `${apiDomain}/youtube-mp4/resolve`;
+    const apiKey = "Russellxz"; // Tu llave correcta
 
     // 2. Petición a la API
     const response = await fetch(apiUrl, {
@@ -34,6 +32,11 @@ const handler = async (msg, { conn, args }) => {
       })
     });
 
+    // Si falla la autenticación aquí, lanzamos error
+    if (response.status !== 200) {
+      throw new Error(`Error API: ${response.status} ${response.statusText}`);
+    }
+
     const json = await response.json();
 
     if (!json.status || !json.result || !json.result.media) {
@@ -42,15 +45,15 @@ const handler = async (msg, { conn, args }) => {
 
     const { title, media } = json.result;
     
-    // 3. CORRECCIÓN DEL LINK (Aquí estaba el error)
+    // 3. CORRECCIÓN DEL ERROR 'ENOENT'
+    // La API devuelve "/youtube-mp4/dl...", le falta el dominio al inicio.
     let videoUrl = media.dl_inline || media.dl_download;
 
-    // Si el link empieza con "/", le falta el dominio. Se lo pegamos:
-    if (videoUrl.startsWith("/")) {
-        videoUrl = apiDomain + videoUrl;
+    if (videoUrl && videoUrl.startsWith("/")) {
+        videoUrl = apiDomain + videoUrl; // Aquí le pegamos https://api-sky...
     }
 
-    console.log("URL FINAL CORREGIDA:", videoUrl);
+    console.log("Link Final:", videoUrl);
 
     // 4. Enviar video
     await conn.sendMessage(chatId, { 
@@ -69,6 +72,6 @@ const handler = async (msg, { conn, args }) => {
   }
 };
 
-handler.command = ['yt4', 'ytt4'];
+handler.command = ['yt4', 'ytmp4'];
 module.exports = handler;
 
