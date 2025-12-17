@@ -1,72 +1,93 @@
-const fetch = require("node-fetch"); // Asegúrate de tener node-fetch instalado
+
+const fetch = require("node-fetch");
 
 const handler = async (msg, { conn, args }) => {
   const chatId = msg.key.remoteJid;
 
-  // 1. Validar si el usuario envió el link
+  // 1. Validar link
   const urlVideo = args.join(" ").trim();
   if (!urlVideo) {
-    return conn.sendMessage(chatId, {
-      text: "❌ *Falta el enlace.*\nUsa: *.ytmp4 [link_youtube]*\nEjemplo: *.ytmp4 https://youtu.be/xyz...*"
-    }, { quoted: msg });
+    return conn.sendMessage(chatId, { text: "❌ Falta el enlace." }, { quoted: msg });
   }
 
-  // 2. Reacción de 'Cargando'
   await conn.sendMessage(chatId, { react: { text: '⏳', key: msg.key } });
 
-  try {
-    // 3. CONEXIÓN A TU API (Según documentación en imagen)
-    const apiUrl = "https://api-sky.ultraplus.click/youtube-mp4/resolve";
-    const apiKey = "Russellxz"; 
+  console.log("--- INICIANDO COMANDO YTMP4 ---");
+  console.log("URL recibida:", urlVideo);
 
+  try {
+    const apiUrl = "https://api-sky.ultraplus.click/youtube-mp4/resolve";
+    const apiKey = "Russellxz";
+
+    console.log("Enviando petición a:", apiUrl);
+
+    // 2. Petición a la API
     const response = await fetch(apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "apikey": apiKey
       },
-      // Cuerpo del JSON idéntico a tu documentación: url, type, quality
       body: JSON.stringify({ 
         url: urlVideo, 
-        type: "video",  
-        quality: "360"  // Calidad recomendada para WhatsApp
+        type: "video", 
+        quality: "360" 
       })
     });
 
-    const json = await response.json();
+    console.log("Estatus HTTP:", response.status);
 
-    // 4. Validar respuesta exitosa
-    if (!json.status || !json.result) {
-      console.log(json); // Para depurar en consola si falla
-      throw new Error("La API no devolvió un resultado válido.");
+    // 3. Obtener respuesta como TEXTO primero (para ver si devuelve HTML de error)
+    const rawText = await response.text();
+    console.log("Respuesta cruda del servidor:", rawText);
+
+    // 4. Intentar convertir a JSON
+    let json;
+    try {
+      json = JSON.parse(rawText);
+    } catch (e) {
+      throw new Error("La API no devolvió un JSON válido. Respuesta: " + rawText.slice(0, 50) + "...");
+    }
+
+    // 5. Verificar si la API dio error lógico (status: false)
+    if (!json.status) {
+      throw new Error(json.message || "Error desconocido en la API.");
+    }
+
+    if (!json.result || !json.result.media) {
+      throw new Error("El JSON no tiene la propiedad 'result.media'.");
     }
 
     const { title, media } = json.result;
-    
-    // Según tu documentación: media.dl_inline sirve para reproducir (link directo)
     const videoUrl = media.dl_inline || media.dl_download;
 
-    // 5. Enviar el Video a WhatsApp
+    console.log("URL del video obtenida:", videoUrl);
+
+    if (!videoUrl) {
+      throw new Error("La API respondió OK, pero no devolvió link de video.");
+    }
+
+    // 6. Enviar video
     await conn.sendMessage(chatId, { 
       video: { url: videoUrl }, 
-      caption: `🎥 *${title}*\n\n⚡ Descargado con *SkyUltraPlus API*`,
+      caption: `🎥 *${title}*\n\n⚡ SkyUltraPlus API`,
       mimetype: 'video/mp4'
     }, { quoted: msg });
 
-    // 6. Reacción final de éxito
     await conn.sendMessage(chatId, { react: { text: '✅', key: msg.key } });
+    console.log("--- COMANDO FINALIZADO CON ÉXITO ---");
 
   } catch (e) {
-    console.error("Error en comando ytmp4:", e);
+    console.error("❌ ERROR CRÍTICO EN YTMP4:", e);
+    
+    // ENVIAR EL ERROR REAL AL CHAT
     await conn.sendMessage(chatId, { 
-      text: `❌ *Ocurrió un error:* No se pudo descargar el video.\nVerifica que el enlace sea correcto o intenta más tarde.` 
+      text: `❌ *Debug Error:*\n${e.message}` 
     }, { quoted: msg });
     
     await conn.sendMessage(chatId, { react: { text: '❌', key: msg.key } });
   }
 };
 
-// Configuración del comando
-handler.command = ['yt4', '4', 'mp'];
+handler.command = ['yt4', '4'];
 module.exports = handler;
-
