@@ -1,5 +1,6 @@
 // commands/twitter.js — Twitter/X interactivo (👍 normal / ❤️ documento o 1/2)
-// - Descarga a buffer para evitar 401 al enviar URL directo
+// - Normaliza links x.com/twitter.com (incluye /i/status/)
+// - Preview de imagen usando BUFFER (evita 401/403)
 // - En el resultado final muestra tu API (publicidad), no el link del tweet
 "use strict";
 
@@ -9,6 +10,7 @@ const axios = require("axios");
 const API_BASE = (process.env.API_BASE || "https://api-sky.ultraplus.click").replace(/\/+$/, "");
 const API_KEY = process.env.API_KEY || "Russellxz";
 const ENDPOINT = `${API_BASE}/twitter`; // <-- ajusta si tu endpoint se llama distinto
+const API_PUBLICITY = process.env.API_PUBLICITY || API_BASE; // lo que quieres mostrar de publicidad
 
 const MAX_TIMEOUT = 30000;
 const UA =
@@ -30,15 +32,45 @@ async function react(conn, chatId, key, emoji) {
   } catch {}
 }
 
-function normXUrl(u = "") {
-  const url = String(u || "").trim();
-  if (!url) return "";
-  // acepta x.com o twitter.com
-  if (!/^https?:\/\//i.test(url)) return "";
-  const m =
-    url.match(/(https:\/\/x\.com\/[^\/]+\/status\/\d+)/i) ||
-    url.match(/(https:\/\/twitter\.com\/[^\/]+\/status\/\d+)/i);
-  return m ? m[1] : url;
+// ✅ Normaliza: soporta x.com, twitter.com, mobile.twitter.com
+// ✅ Soporta /user/status/ID y /i/status/ID y /i/web/status/ID
+function normXUrl(input = "") {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+
+  // si no trae protocolo, intentar arreglar
+  const maybe = raw.startsWith("http://") || raw.startsWith("https://") ? raw : `https://${raw}`;
+
+  let u;
+  try {
+    u = new URL(maybe);
+  } catch {
+    return "";
+  }
+
+  const host = (u.hostname || "").toLowerCase();
+  if (!/(\bx\.com\b|\btwitter\.com\b|\bmobile\.twitter\.com\b)/i.test(host)) return "";
+
+  const path = (u.pathname || "").replace(/\/+$/, "");
+  // posibles formatos:
+  // /<user>/status/<id>
+  // /i/status/<id>
+  // /i/web/status/<id>
+  let id = null;
+
+  const m1 = path.match(/\/status\/(\d+)/i);
+  if (m1) id = m1[1];
+
+  const m2 = path.match(/\/i\/status\/(\d+)/i);
+  if (!id && m2) id = m2[1];
+
+  const m3 = path.match(/\/i\/web\/status\/(\d+)/i);
+  if (!id && m3) id = m3[1];
+
+  if (!id) return "";
+
+  // Canonical: usar x.com/i/status/<id> (sirve aunque no haya username)
+  return `https://x.com/i/status/${id}`;
 }
 
 function fmtDate(d) {
@@ -55,28 +87,48 @@ function fmtDate(d) {
 function pickBestMedia(mediaArr = []) {
   if (!Array.isArray(mediaArr) || !mediaArr.length) return null;
   // prioriza video
-  const v = mediaArr.find((m) => (m?.type || "").toLowerCase().includes("video"));
+  const v = mediaArr.find((m) => String(m?.type || "").toLowerCase().includes("video"));
   return v || mediaArr[0];
 }
 
 async function getTwitterFromApi(url) {
-  // Tu API debe devolver algo tipo:
-  // { status:true, result:{ authorName, authorUsername, likes, replies, retweets, date, media:[{url,type}] } }
-  // o directo el output del scraper: { found:true, media:[...], authorName,... }
-  const { data, status } = await axios.post(
-    ENDPOINT,
-    { url },
-    {
+  // Intento 1: POST {url}
+  let resp;
+  try {
+    resp = await axios.post(
+      ENDPOINT,
+      { url },
+      {
+        headers: {
+          apikey: API_KEY,
+          Authorization: `Bearer ${API_KEY}`,
+          "Content-Type": "application/json",
+          "User-Agent": UA,
+        },
+        timeout: MAX_TIMEOUT,
+        validateStatus: () => true,
+      }
+    );
+  } catch (e) {
+    resp = null;
+  }
+
+  // Intento 2: GET ?url=
+  if (!resp || resp.status >= 400) {
+    resp = await axios.get(ENDPOINT, {
+      params: { url },
       headers: {
         apikey: API_KEY,
         Authorization: `Bearer ${API_KEY}`,
-        "Content-Type": "application/json",
         "User-Agent": UA,
+        Accept: "application/json",
       },
       timeout: MAX_TIMEOUT,
       validateStatus: () => true,
-    }
-  );
+    });
+  }
+
+  const { data, status } = resp;
 
   let j = data;
   if (typeof j === "string") {
@@ -141,6 +193,23 @@ function guessMime(type, url) {
   return "application/octet-stream";
 }
 
+async function sendPreview(conn, chatId, d, msg, captionPreview) {
+  // ✅ Si es imagen, mandar buffer para evitar 401/403
+  const isImg = guessMime(d.mediaBest.type, d.mediaBest.url).startsWith("image/");
+  if (!isImg) {
+    return await conn.sendMessage(chatId, { text: captionPreview }, { quoted: msg });
+  }
+
+  try {
+    const buf = await downloadBuffer(d.mediaBest.url);
+    const mimetype = guessMime(d.mediaBest.type, d.mediaBest.url);
+    return await conn.sendMessage(chatId, { image: buf, mimetype, caption: captionPreview }, { quoted: msg });
+  } catch {
+    // fallback: texto si falla el buffer
+    return await conn.sendMessage(chatId, { text: captionPreview }, { quoted: msg });
+  }
+}
+
 async function sendMedia(conn, job, asDocument, triggerMsg) {
   const { chatId, mediaUrl, mediaType, caption, previewKey, quotedBase } = job;
 
@@ -151,7 +220,6 @@ async function sendMedia(conn, job, asDocument, triggerMsg) {
     const buf = await downloadBuffer(mediaUrl);
     const mimetype = guessMime(mediaType, mediaUrl);
 
-    // Decide si es video o imagen
     const isVideo = mimetype.startsWith("video/");
     const isImage = mimetype.startsWith("image/");
 
@@ -160,30 +228,12 @@ async function sendMedia(conn, job, asDocument, triggerMsg) {
       isVideo ? `${fileNameBase}.mp4` : isImage ? `${fileNameBase}.jpg` : `${fileNameBase}.bin`;
 
     const payload = asDocument
-      ? {
-          document: buf,
-          mimetype,
-          fileName,
-          caption,
-        }
+      ? { document: buf, mimetype, fileName, caption }
       : isVideo
-      ? {
-          video: buf,
-          mimetype,
-          caption,
-        }
+      ? { video: buf, mimetype, caption }
       : isImage
-      ? {
-          image: buf,
-          mimetype,
-          caption,
-        }
-      : {
-          document: buf,
-          mimetype,
-          fileName,
-          caption,
-        };
+      ? { image: buf, mimetype, caption }
+      : { document: buf, mimetype, fileName, caption };
 
     await conn.sendMessage(chatId, payload, { quoted: quotedBase || triggerMsg });
 
@@ -207,16 +257,22 @@ module.exports = async (msg, { conn, args }) => {
   if (!text) {
     return conn.sendMessage(
       chatId,
-      { text: `✳️ Usa:\n.tw <link de X/Twitter>\nEj: .tw https://x.com/user/status/123` },
+      { text: `✳️ Usa:\n.tw <link de X/Twitter>\nEj: .tw https://x.com/i/status/123` },
       { quoted: msg }
     );
   }
 
   const url = normXUrl(text);
-  if (!url || !/\/\/(x|twitter)\.com/i.test(url)) {
+  if (!url) {
     return conn.sendMessage(
       chatId,
-      { text: `❌ Enlace inválido.\nUsa un link de X/Twitter tipo:\nhttps://x.com/user/status/123` },
+      {
+        text:
+          `❌ Enlace inválido.\n` +
+          `Usa un link de X/Twitter tipo:\n` +
+          `https://x.com/i/status/123\n` +
+          `https://x.com/usuario/status/123`,
+      },
       { quoted: msg }
     );
   }
@@ -238,14 +294,7 @@ module.exports = async (msg, { conn, args }) => {
 ✦ 𝗘𝘀𝘁𝗮𝗱𝘀: ❤️ ${d.likes} · 💬 ${d.replies} · 🔁 ${d.retweets}
 ✦ 𝗙𝗲𝗰𝗵𝗮: ${fmtDate(d.date)}`;
 
-    // preview (si es imagen, mandamos imagen con caption para que se vea bonito)
-    let preview;
-    const previewIsImage = guessMime(d.mediaBest.type, d.mediaBest.url).startsWith("image/");
-    if (previewIsImage) {
-      preview = await conn.sendMessage(chatId, { image: { url: d.mediaBest.url }, caption: captionPreview }, { quoted: msg });
-    } else {
-      preview = await conn.sendMessage(chatId, { text: captionPreview }, { quoted: msg });
-    }
+    const preview = await sendPreview(conn, chatId, d, msg, captionPreview);
 
     pendingTW[preview.key.id] = {
       chatId,
@@ -259,7 +308,7 @@ module.exports = async (msg, { conn, args }) => {
 `✅ 𝗧𝘄𝗶𝘁𝘁𝗲𝗿/𝗫 — 𝗹𝗶𝘀𝘁𝗼
 
 ✦ 𝗔𝘂𝘁𝗼𝗿: ${d.authorName} ${username}
-✦ 𝗔𝗣𝗜: ${ENDPOINT}
+✦ 𝗔𝗣𝗜: ${API_PUBLICITY}
 
 🤖 𝙎𝙪𝙠𝙞 𝘽𝙤𝙩`,
     };
@@ -325,7 +374,8 @@ module.exports = async (msg, { conn, args }) => {
 
     if (/api key|unauthorized|forbidden|401/i.test(s)) msgTxt = "🔐 API Key inválida o sin permisos (401).";
     else if (/timeout|timed out|502|upstream/i.test(s)) msgTxt = "⚠️ Timeout o error del servidor.";
-    else if (/no media/i.test(s)) msgTxt = "⚠️ No se encontró media en ese tweet.";
+    else if (/no se encontró media|no media/i.test(s)) msgTxt = "⚠️ No se encontró media en ese tweet.";
+    else if (/url inválida|enlace inválido|id/i.test(s)) msgTxt = "⚠️ Ese link no parece un tweet válido.";
 
     await conn.sendMessage(chatId, { text: msgTxt }, { quoted: msg });
     await react(conn, chatId, msg.key, "❌");
