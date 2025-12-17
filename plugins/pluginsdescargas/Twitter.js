@@ -1,6 +1,7 @@
+
 // commands/twitter.js — Twitter/X interactivo (👍 normal / ❤️ documento o 1/2)
-// - Normaliza links x.com/twitter.com (incluye /i/status/)
-// - Preview de imagen usando BUFFER (evita 401/403)
+// - PREVIEW por buffer (evita 401 de Baileys al usar URL directo)
+// - Descarga final por buffer
 // - En el resultado final muestra tu API (publicidad), no el link del tweet
 "use strict";
 
@@ -9,10 +10,13 @@ const axios = require("axios");
 // === Config API (tu API) ===
 const API_BASE = (process.env.API_BASE || "https://api-sky.ultraplus.click").replace(/\/+$/, "");
 const API_KEY = process.env.API_KEY || "Russellxz";
-const ENDPOINT = `${API_BASE}/twitter`; // <-- ajusta si tu endpoint se llama distinto
-const API_PUBLICITY = process.env.API_PUBLICITY || API_BASE; // lo que quieres mostrar de publicidad
 
-const MAX_TIMEOUT = 30000;
+// ✅ si tu endpoint cambia, lo puedes setear por env sin tocar el archivo
+const ENDPOINT = (process.env.TWITTER_ENDPOINT || `${API_BASE}/twitter`).replace(/\/+$/, "");
+
+const PUBLIC_API_URL = process.env.PUBLIC_API_URL || API_BASE;
+
+const MAX_TIMEOUT = 45000;
 const UA =
   "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36";
 
@@ -32,45 +36,23 @@ async function react(conn, chatId, key, emoji) {
   } catch {}
 }
 
-// ✅ Normaliza: soporta x.com, twitter.com, mobile.twitter.com
-// ✅ Soporta /user/status/ID y /i/status/ID y /i/web/status/ID
-function normXUrl(input = "") {
-  const raw = String(input || "").trim();
-  if (!raw) return "";
+function normXUrl(u = "") {
+  const url = String(u || "").trim();
+  if (!url) return "";
 
-  // si no trae protocolo, intentar arreglar
-  const maybe = raw.startsWith("http://") || raw.startsWith("https://") ? raw : `https://${raw}`;
+  // acepta x.com, twitter.com, mobile.twitter.com
+  if (!/^https?:\/\//i.test(url)) return "";
 
-  let u;
-  try {
-    u = new URL(maybe);
-  } catch {
-    return "";
-  }
+  // corta /photo/1 o cosas extra
+  const m =
+    url.match(/(https?:\/\/(?:www\.)?x\.com\/[^\/]+\/status\/\d+)/i) ||
+    url.match(/(https?:\/\/(?:www\.)?x\.com\/i\/status\/\d+)/i) ||
+    url.match(/(https?:\/\/(?:www\.)?twitter\.com\/[^\/]+\/status\/\d+)/i) ||
+    url.match(/(https?:\/\/(?:www\.)?twitter\.com\/i\/status\/\d+)/i) ||
+    url.match(/(https?:\/\/(?:mobile\.)?twitter\.com\/[^\/]+\/status\/\d+)/i) ||
+    url.match(/(https?:\/\/(?:mobile\.)?twitter\.com\/i\/status\/\d+)/i);
 
-  const host = (u.hostname || "").toLowerCase();
-  if (!/(\bx\.com\b|\btwitter\.com\b|\bmobile\.twitter\.com\b)/i.test(host)) return "";
-
-  const path = (u.pathname || "").replace(/\/+$/, "");
-  // posibles formatos:
-  // /<user>/status/<id>
-  // /i/status/<id>
-  // /i/web/status/<id>
-  let id = null;
-
-  const m1 = path.match(/\/status\/(\d+)/i);
-  if (m1) id = m1[1];
-
-  const m2 = path.match(/\/i\/status\/(\d+)/i);
-  if (!id && m2) id = m2[1];
-
-  const m3 = path.match(/\/i\/web\/status\/(\d+)/i);
-  if (!id && m3) id = m3[1];
-
-  if (!id) return "";
-
-  // Canonical: usar x.com/i/status/<id> (sirve aunque no haya username)
-  return `https://x.com/i/status/${id}`;
+  return m ? m[1] : url;
 }
 
 function fmtDate(d) {
@@ -87,48 +69,25 @@ function fmtDate(d) {
 function pickBestMedia(mediaArr = []) {
   if (!Array.isArray(mediaArr) || !mediaArr.length) return null;
   // prioriza video
-  const v = mediaArr.find((m) => String(m?.type || "").toLowerCase().includes("video"));
+  const v = mediaArr.find((m) => (m?.type || "").toLowerCase().includes("video"));
   return v || mediaArr[0];
 }
 
 async function getTwitterFromApi(url) {
-  // Intento 1: POST {url}
-  let resp;
-  try {
-    resp = await axios.post(
-      ENDPOINT,
-      { url },
-      {
-        headers: {
-          apikey: API_KEY,
-          Authorization: `Bearer ${API_KEY}`,
-          "Content-Type": "application/json",
-          "User-Agent": UA,
-        },
-        timeout: MAX_TIMEOUT,
-        validateStatus: () => true,
-      }
-    );
-  } catch (e) {
-    resp = null;
-  }
-
-  // Intento 2: GET ?url=
-  if (!resp || resp.status >= 400) {
-    resp = await axios.get(ENDPOINT, {
-      params: { url },
+  const { data, status } = await axios.post(
+    ENDPOINT,
+    { url },
+    {
       headers: {
         apikey: API_KEY,
         Authorization: `Bearer ${API_KEY}`,
+        "Content-Type": "application/json",
         "User-Agent": UA,
-        Accept: "application/json",
       },
       timeout: MAX_TIMEOUT,
       validateStatus: () => true,
-    });
-  }
-
-  const { data, status } = resp;
+    }
+  );
 
   let j = data;
   if (typeof j === "string") {
@@ -139,7 +98,6 @@ async function getTwitterFromApi(url) {
     }
   }
 
-  // Soporta varias formas
   const ok = j?.status === true || j?.found === true || j?.success === true;
   if (!ok) {
     const msg = j?.message || j?.error || `HTTP ${status}`;
@@ -164,14 +122,19 @@ async function getTwitterFromApi(url) {
 }
 
 async function downloadBuffer(url) {
+  // Reintento simple: a veces X responde raro, esto ayuda
+  const headers = {
+    "User-Agent": UA,
+    Referer: "https://x.com/",
+    Origin: "https://x.com",
+    Accept: "*/*",
+  };
+
   const resp = await axios.get(url, {
     responseType: "arraybuffer",
     timeout: MAX_TIMEOUT,
-    headers: {
-      "User-Agent": UA,
-      Referer: "https://x.com/",
-      Accept: "*/*",
-    },
+    headers,
+    maxRedirects: 5,
     validateStatus: () => true,
   });
 
@@ -186,28 +149,11 @@ function guessMime(type, url) {
   const u = String(url || "").toLowerCase();
 
   if (t.includes("video") || u.includes(".mp4")) return "video/mp4";
-  if (t.includes("gif")) return "video/mp4"; // muchos gifs vienen como mp4
+  if (t.includes("gif")) return "video/mp4";
   if (t.includes("photo") || t.includes("image") || u.includes(".jpg") || u.includes(".jpeg"))
     return "image/jpeg";
   if (u.includes(".png")) return "image/png";
   return "application/octet-stream";
-}
-
-async function sendPreview(conn, chatId, d, msg, captionPreview) {
-  // ✅ Si es imagen, mandar buffer para evitar 401/403
-  const isImg = guessMime(d.mediaBest.type, d.mediaBest.url).startsWith("image/");
-  if (!isImg) {
-    return await conn.sendMessage(chatId, { text: captionPreview }, { quoted: msg });
-  }
-
-  try {
-    const buf = await downloadBuffer(d.mediaBest.url);
-    const mimetype = guessMime(d.mediaBest.type, d.mediaBest.url);
-    return await conn.sendMessage(chatId, { image: buf, mimetype, caption: captionPreview }, { quoted: msg });
-  } catch {
-    // fallback: texto si falla el buffer
-    return await conn.sendMessage(chatId, { text: captionPreview }, { quoted: msg });
-  }
 }
 
 async function sendMedia(conn, job, asDocument, triggerMsg) {
@@ -257,22 +203,16 @@ module.exports = async (msg, { conn, args }) => {
   if (!text) {
     return conn.sendMessage(
       chatId,
-      { text: `✳️ Usa:\n.tw <link de X/Twitter>\nEj: .tw https://x.com/i/status/123` },
+      { text: `✳️ Usa:\n.tw <link de X/Twitter>\nEj: .tw https://x.com/user/status/123` },
       { quoted: msg }
     );
   }
 
   const url = normXUrl(text);
-  if (!url) {
+  if (!url || !/\/\/(x|twitter)\.com/i.test(url)) {
     return conn.sendMessage(
       chatId,
-      {
-        text:
-          `❌ Enlace inválido.\n` +
-          `Usa un link de X/Twitter tipo:\n` +
-          `https://x.com/i/status/123\n` +
-          `https://x.com/usuario/status/123`,
-      },
+      { text: `❌ Enlace inválido.\nUsa un link de X/Twitter tipo:\nhttps://x.com/user/status/123` },
       { quoted: msg }
     );
   }
@@ -283,6 +223,7 @@ module.exports = async (msg, { conn, args }) => {
     const d = await getTwitterFromApi(url);
 
     const username = d.authorUsername ? `@${String(d.authorUsername).replace(/^@/, "")}` : "";
+
     const captionPreview =
 `⚡ 𝗧𝘄𝗶𝘁𝘁𝗲𝗿/𝗫 — 𝗼𝗽𝗰𝗶𝗼𝗻𝗲𝘀
 
@@ -294,7 +235,30 @@ module.exports = async (msg, { conn, args }) => {
 ✦ 𝗘𝘀𝘁𝗮𝗱𝘀: ❤️ ${d.likes} · 💬 ${d.replies} · 🔁 ${d.retweets}
 ✦ 𝗙𝗲𝗰𝗵𝗮: ${fmtDate(d.date)}`;
 
-    const preview = await sendPreview(conn, chatId, d, msg, captionPreview);
+    // ✅ PREVIEW: si es imagen, mandamos BUFFER (evita 401)
+    let preview;
+    const previewMime = guessMime(d.mediaBest.type, d.mediaBest.url);
+
+    if (previewMime.startsWith("image/")) {
+      let imgBuf = null;
+      try {
+        imgBuf = await downloadBuffer(d.mediaBest.url);
+      } catch {
+        imgBuf = null;
+      }
+
+      if (imgBuf) {
+        preview = await conn.sendMessage(
+          chatId,
+          { image: imgBuf, mimetype: previewMime, caption: captionPreview },
+          { quoted: msg }
+        );
+      } else {
+        preview = await conn.sendMessage(chatId, { text: captionPreview }, { quoted: msg });
+      }
+    } else {
+      preview = await conn.sendMessage(chatId, { text: captionPreview }, { quoted: msg });
+    }
 
     pendingTW[preview.key.id] = {
       chatId,
@@ -308,7 +272,7 @@ module.exports = async (msg, { conn, args }) => {
 `✅ 𝗧𝘄𝗶𝘁𝘁𝗲𝗿/𝗫 — 𝗹𝗶𝘀𝘁𝗼
 
 ✦ 𝗔𝘂𝘁𝗼𝗿: ${d.authorName} ${username}
-✦ 𝗔𝗣𝗜: ${API_PUBLICITY}
+✦ 𝗔𝗣𝗜: ${PUBLIC_API_URL}
 
 🤖 𝙎𝙪𝙠𝙞 𝘽𝙤𝙩`,
     };
@@ -374,8 +338,8 @@ module.exports = async (msg, { conn, args }) => {
 
     if (/api key|unauthorized|forbidden|401/i.test(s)) msgTxt = "🔐 API Key inválida o sin permisos (401).";
     else if (/timeout|timed out|502|upstream/i.test(s)) msgTxt = "⚠️ Timeout o error del servidor.";
-    else if (/no se encontró media|no media/i.test(s)) msgTxt = "⚠️ No se encontró media en ese tweet.";
-    else if (/url inválida|enlace inválido|id/i.test(s)) msgTxt = "⚠️ Ese link no parece un tweet válido.";
+    else if (/no media/i.test(s)) msgTxt = "⚠️ No se encontró media en ese tweet.";
+    else if (/enlace|url/i.test(s)) msgTxt = "❌ No pude procesar ese enlace. Intenta copiar el link completo del tweet.";
 
     await conn.sendMessage(chatId, { text: msgTxt }, { quoted: msg });
     await react(conn, chatId, msg.key, "❌");
