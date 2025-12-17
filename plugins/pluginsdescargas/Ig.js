@@ -1,4 +1,9 @@
-// ig.js — Instagram SOLO VIDEO (👍 normal / ❤️ documento o 1/2) — API NUEVA
+// comandos/ig.js — Instagram SOLO VIDEO
+// ✅ Reacciones: 👍 (Normal) / ❤️ (Documento) o Respuestas 1 / 2
+// ✅ Mensaje de espera: "Descargando su video..."
+// ✅ Branding: La Suki Bot + Link API + Thumbnail
+// ✅ Multiuso: No se borra al instante (10 min activo)
+
 "use strict";
 
 const axios = require("axios");
@@ -7,7 +12,7 @@ const path = require("path");
 
 const API_BASE = (process.env.API_BASE || "https://api-sky.ultraplus.click").replace(/\/+$/, "");
 const SKY_API_KEY = process.env.API_KEY || "Russellxz";
-const MAX_MB = Number(process.env.MAX_MB || 99);
+const MAX_MB = Number(process.env.MAX_MB || 200);
 
 const pendingIG = Object.create(null);
 
@@ -23,8 +28,6 @@ function isUrl(u = "") {
 function normalizeIGUrl(input = "") {
   let u = String(input || "").trim();
   u = u.replace(/^<|>$/g, "").trim();
-
-  // si viene sin protocolo
   if (/^(www\.)?instagram\.com\//i.test(u) || /^instagr\.am\//i.test(u)) {
     u = "https://" + u.replace(/^\/+/, "");
   }
@@ -39,13 +42,11 @@ function safeFileName(name = "instagram") {
   );
 }
 
-async function setReaction(conn, chatId, key, emoji) {
-  try {
-    await conn.sendMessage(chatId, { react: { text: emoji, key } });
-  } catch {}
+async function react(conn, chatId, key, emoji) {
+  try { await conn.sendMessage(chatId, { react: { text: emoji, key } }); } catch {}
 }
 
-// ✅ API NUEVA (POST /instagram)
+// 1. LLAMADA A LA API (POST /instagram)
 async function callSkyInstagram(url) {
   const endpoint = `${API_BASE}/instagram`;
 
@@ -64,13 +65,8 @@ async function callSkyInstagram(url) {
   );
 
   let data = r.data;
-
   if (typeof data === "string") {
-    try {
-      data = JSON.parse(data.trim());
-    } catch {
-      throw new Error("Respuesta no JSON del servidor");
-    }
+    try { data = JSON.parse(data.trim()); } catch { throw new Error("Respuesta no JSON del servidor"); }
   }
 
   const ok = data?.status === true || data?.status === "true";
@@ -85,18 +81,14 @@ function extractItems(result) {
 }
 
 function pickFirstVideo(items) {
-  // 1) por type
   let v = items.find((it) => String(it?.type || "").toLowerCase() === "video" && it?.url);
   if (v?.url) return String(v.url);
-
-  // 2) por extensión
   v = items.find((it) => /\.mp4(\?|#|$)/i.test(String(it?.url || "")));
   if (v?.url) return String(v.url);
-
   return null;
 }
 
-// ✅ descargar usando /instagram/dl (con apikey)
+// 2. DESCARGA PROXY (GET /instagram/dl)
 async function downloadVideoToTmpFromProxy(srcUrl, filenameBase = "instagram") {
   const tmp = path.resolve("./tmp");
   if (!fs.existsSync(tmp)) fs.mkdirSync(tmp, { recursive: true });
@@ -116,18 +108,14 @@ async function downloadVideoToTmpFromProxy(srcUrl, filenameBase = "instagram") {
     timeout: 180000,
     headers: {
       apikey: SKY_API_KEY,
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
       Accept: "*/*",
     },
     maxRedirects: 5,
     validateStatus: (s) => s < 400,
   });
 
-  const filePath = path.join(
-    tmp,
-    `ig-${Date.now()}-${Math.floor(Math.random() * 1e5)}.mp4`
-  );
+  const filePath = path.join(tmp, `ig-${Date.now()}.mp4`);
 
   await new Promise((resolve, reject) => {
     const w = fs.createWriteStream(filePath);
@@ -139,34 +127,7 @@ async function downloadVideoToTmpFromProxy(srcUrl, filenameBase = "instagram") {
   return filePath;
 }
 
-async function sendVideo(conn, chatId, filePath, asDocument, quoted) {
-  const sizeMB = mb(fs.statSync(filePath).size);
-
-  if (sizeMB > MAX_MB) {
-    try { fs.unlinkSync(filePath); } catch {}
-    return conn.sendMessage(
-      chatId,
-      { text: `❌ Video ≈ ${sizeMB.toFixed(2)} MB — supera el límite de ${MAX_MB} MB.` },
-      { quoted }
-    );
-  }
-
-  const buf = fs.readFileSync(filePath);
-
-  await conn.sendMessage(
-    chatId,
-    {
-      [asDocument ? "document" : "video"]: buf,
-      mimetype: "video/mp4",
-      fileName: `instagram-${Date.now()}.mp4`,
-      caption: asDocument ? undefined : "✅ Instagram video listo",
-    },
-    { quoted }
-  );
-
-  try { fs.unlinkSync(filePath); } catch {}
-}
-
+// 3. HANDLER PRINCIPAL
 module.exports = async (msg, { conn, args, command }) => {
   const chatId = msg.key.remoteJid;
   const pref = global.prefixes?.[0] || ".";
@@ -196,132 +157,95 @@ Ej: ${pref}${command} https://www.instagram.com/reel/XXXX/`,
   }
 
   try {
-    await setReaction(conn, chatId, msg.key, "⏳");
+    await react(conn, chatId, msg.key, "⏳");
 
+    // A) Consultar API
     const result = await callSkyInstagram(text);
     const items = extractItems(result);
-
     const videoUrl = pickFirstVideo(items);
+
     if (!videoUrl) {
-      await setReaction(conn, chatId, msg.key, "❌");
-      return conn.sendMessage(
-        chatId,
-        { text: "🚫 Ese enlace no tiene un video descargable." },
-        { quoted: msg }
-      );
+      await react(conn, chatId, msg.key, "❌");
+      return conn.sendMessage(chatId, { text: "🚫 Ese enlace no tiene un video descargable." }, { quoted: msg });
     }
 
-    const optionsText =
-`⚡ Instagram — opciones (SOLO VIDEO)
+    // Datos extra
+    const title = result?.title || "Instagram Video";
+    const thumb = result?.thumbnail || result?.image || ""; // Banner
 
-👍 Enviar normal
-❤️ Enviar como documento
-— o responde: 1 = normal · 2 = documento`;
+    // B) Mensaje de Opciones
+    const caption =
+`⚡ 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 — 𝗢𝗽𝗰𝗶𝗼𝗻𝗲𝘀
 
-    const preview = await conn.sendMessage(chatId, { text: optionsText }, { quoted: msg });
+Elige cómo enviarlo:
+👍 𝗩𝗶𝗱𝗲𝗼 (normal)
+❤️ 𝗩𝗶𝗱𝗲𝗼 𝗰𝗼𝗺𝗼 𝗱𝗼𝗰𝘂𝗺𝗲𝗻𝘁𝗼
+— o responde: 1 = normal · 2 = documento
 
-    // guardar trabajo pendiente (clave = id del mensaje de opciones)
+🤖 𝗕𝗼𝘁: La Suki Bot
+🔗 𝗔𝗣𝗜: https://api-sky.ultraplus.click`;
+
+    let preview;
+    if (thumb && isUrl(thumb)) {
+        preview = await conn.sendMessage(chatId, { image: { url: thumb }, caption }, { quoted: msg });
+    } else {
+        preview = await conn.sendMessage(chatId, { text: caption }, { quoted: msg });
+    }
+
+    // C) Guardar trabajo (10 min de vida)
     pendingIG[preview.key.id] = {
       chatId,
       url: videoUrl,
+      title, // Guardamos título para el archivo
       quotedBase: msg,
       previewKey: preview.key,
-      createdAt: Date.now(),
-      processing: false,
+      isBusy: false,
     };
 
-    await setReaction(conn, chatId, msg.key, "✅");
+    // Auto-limpieza
+    setTimeout(() => {
+        if (pendingIG[preview.key.id]) delete pendingIG[preview.key.id];
+    }, 10 * 60 * 1000);
 
+    await react(conn, chatId, msg.key, "✅");
+
+    // D) Listener
     if (!conn._igListener) {
       conn._igListener = true;
 
       conn.ev.on("messages.upsert", async (ev) => {
         for (const m of ev.messages) {
           try {
-            // limpiar jobs viejos (15 min)
-            for (const k of Object.keys(pendingIG)) {
-              if (Date.now() - (pendingIG[k]?.createdAt || 0) > 15 * 60 * 1000) {
-                delete pendingIG[k];
-              }
-            }
-
-            // -------- REACCIONES (👍 / ❤️) --------
+            // Reacciones
             if (m.message?.reactionMessage) {
               const { key: reactKey, text: emoji } = m.message.reactionMessage;
               const job = pendingIG[reactKey.id];
-              if (!job) continue;
-              if (job.chatId !== m.key.remoteJid) continue;
-
-              // solo aceptamos estas reacciones
+              
+              if (!job || job.chatId !== m.key.remoteJid) continue;
               if (emoji !== "👍" && emoji !== "❤️") continue;
 
-              // anti-duplicados
-              if (job.processing) continue;
-              job.processing = true;
-
+              if (job.isBusy) continue;
               const asDoc = emoji === "❤️";
-
-              // reacción “descargando” en el mensaje de opciones
-              await setReaction(conn, job.chatId, job.previewKey, "⏳");
-
-              try {
-                const filePath = await downloadVideoToTmpFromProxy(job.url, "instagram");
-                await sendVideo(conn, job.chatId, filePath, asDoc, job.quotedBase);
-                await setReaction(conn, job.chatId, job.previewKey, "✅");
-              } catch (e) {
-                await setReaction(conn, job.chatId, job.previewKey, "❌");
-                await conn.sendMessage(
-                  job.chatId,
-                  { text: `❌ Error descargando: ${e?.message || "unknown"}` },
-                  { quoted: job.quotedBase }
-                );
-              } finally {
-                delete pendingIG[reactKey.id];
-              }
-
+              await processSend(conn, job, asDoc, m);
               continue;
             }
 
-            // -------- RESPUESTAS 1/2 --------
+            // Respuestas texto
             const ctx = m.message?.extendedTextMessage?.contextInfo;
             const replyTo = ctx?.stanzaId;
-
-            const body =
-              (m.message?.conversation ||
-                m.message?.extendedTextMessage?.text ||
-                "").trim();
-
             if (replyTo && pendingIG[replyTo]) {
               const job = pendingIG[replyTo];
               if (job.chatId !== m.key.remoteJid) continue;
 
+              const body = (m.message?.conversation || m.message?.extendedTextMessage?.text || "").trim();
               if (body !== "1" && body !== "2") continue;
 
-              // anti-duplicados
-              if (job.processing) continue;
-              job.processing = true;
-
+              if (job.isBusy) continue;
               const asDoc = body === "2";
-
-              await setReaction(conn, job.chatId, job.previewKey, "⏳");
-
-              try {
-                const filePath = await downloadVideoToTmpFromProxy(job.url, "instagram");
-                await sendVideo(conn, job.chatId, filePath, asDoc, job.quotedBase);
-                await setReaction(conn, job.chatId, job.previewKey, "✅");
-              } catch (e) {
-                await setReaction(conn, job.chatId, job.previewKey, "❌");
-                await conn.sendMessage(
-                  job.chatId,
-                  { text: `❌ Error descargando: ${e?.message || "unknown"}` },
-                  { quoted: job.quotedBase }
-                );
-              } finally {
-                delete pendingIG[replyTo];
-              }
+              await processSend(conn, job, asDoc, m);
             }
           } catch (e) {
-            console.error("IG listener error:", e?.message || e);
+            console.error("IG listener error:", e);
           }
         }
       });
@@ -329,18 +253,65 @@ Ej: ${pref}${command} https://www.instagram.com/reel/XXXX/`,
   } catch (err) {
     const s = String(err?.message || "");
     console.error("❌ IG error:", s);
-
-    let msgTxt = "❌ Error al procesar el enlace.";
-    if (/enlace no válido|no válido|invalid/i.test(s)) msgTxt = "❌ Enlace no válido (usa link completo con https://).";
-    else if (/api key|unauthorized|forbidden|401/i.test(s)) msgTxt = "🔐 API Key inválida o ausente.";
-    else if (/timeout|timed out|502|upstream/i.test(s)) msgTxt = "⚠️ La upstream tardó demasiado o no respondió.";
-
-    await conn.sendMessage(chatId, { text: msgTxt }, { quoted: msg });
-    await setReaction(conn, chatId, msg.key, "❌");
+    await conn.sendMessage(chatId, { text: `❌ Error: ${s}` }, { quoted: msg });
+    await react(conn, chatId, msg.key, "❌");
   }
 };
+
+// 4. FUNCIÓN DE ENVÍO
+async function processSend(conn, job, asDocument, triggerMsg) {
+  job.isBusy = true;
+  const { chatId, url, previewKey, quotedBase } = job;
+  const title = job.title || "instagram";
+
+  try {
+    // Feedback visual
+    await react(conn, chatId, triggerMsg.key, asDocument ? "📁" : "🎬");
+    // Mensaje de espera (LO QUE PEDISTE)
+    await conn.sendMessage(chatId, { text: "⏳ Espere, descargando su video..." }, { quoted: quotedBase });
+
+    // Descarga
+    const filePath = await downloadVideoToTmpFromProxy(url, title);
+    const sizeMB = mb(fs.statSync(filePath).size);
+
+    if (sizeMB > MAX_MB) {
+      try { fs.unlinkSync(filePath); } catch {}
+      return conn.sendMessage(chatId, { text: `❌ Video muy pesado (${sizeMB.toFixed(2)} MB). Límite ${MAX_MB} MB.` }, { quoted: quotedBase });
+    }
+
+    const buf = fs.readFileSync(filePath);
+
+    // Caption Final
+    const finalCaption = 
+`✅ 𝗜𝗻𝘀𝘁𝗮𝗴𝗿𝗮𝗺 𝗩𝗶𝗱𝗲𝗼
+
+🤖 𝗕𝗼𝘁: La Suki Bot
+🔗 𝗔𝗣𝗜: https://api-sky.ultraplus.click`;
+
+    await conn.sendMessage(
+      chatId,
+      {
+        [asDocument ? "document" : "video"]: buf,
+        mimetype: "video/mp4",
+        fileName: `${safeFileName(title)}.mp4`,
+        caption: asDocument ? finalCaption : finalCaption,
+      },
+      { quoted: quotedBase }
+    );
+
+    try { fs.unlinkSync(filePath); } catch {}
+    await react(conn, chatId, triggerMsg.key, "✅");
+
+  } catch (e) {
+    await react(conn, chatId, triggerMsg.key, "❌");
+    await conn.sendMessage(chatId, { text: `❌ Error enviando: ${e?.message || "unknown"}` }, { quoted: quotedBase });
+  } finally {
+    job.isBusy = false; // Liberar para otra descarga
+  }
+}
 
 module.exports.command = ["instagram", "ig"];
 module.exports.help = ["instagram <url>", "ig <url>"];
 module.exports.tags = ["descargas"];
 module.exports.register = true;
+
