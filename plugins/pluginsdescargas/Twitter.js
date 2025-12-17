@@ -1,18 +1,13 @@
-
-// commands/twitter.js — Twitter/X interactivo (👍 normal / ❤️ documento o 1/2)
-// - PREVIEW por buffer (evita 401 de Baileys al usar URL directo)
-// - Descarga final por buffer
-// - En el resultado final muestra tu API (publicidad), no el link del tweet
 "use strict";
 
 const axios = require("axios");
 
 // === Config API (tu API) ===
 const API_BASE = (process.env.API_BASE || "https://api-sky.ultraplus.click").replace(/\/+$/, "");
-const API_KEY = process.env.API_KEY || "Russellxz";
+const API_KEY = process.env.API_KEY || "Russellxz";  // ← Key de ejemplo que aparece en la doc (funciona para pruebas)
 
 // ✅ si tu endpoint cambia, lo puedes setear por env sin tocar el archivo
-const ENDPOINT = (process.env.TWITTER_ENDPOINT || `${API_BASE}/twitter`).replace(/\/+$/, "");
+const ENDPOINT = (process.env.TWITTER_ENDPOINT || `\( {API_BASE}/twitter`).replace(/\/+ \)/, "");
 
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || API_BASE;
 
@@ -40,10 +35,8 @@ function normXUrl(u = "") {
   const url = String(u || "").trim();
   if (!url) return "";
 
-  // acepta x.com, twitter.com, mobile.twitter.com
   if (!/^https?:\/\//i.test(url)) return "";
 
-  // corta /photo/1 o cosas extra
   const m =
     url.match(/(https?:\/\/(?:www\.)?x\.com\/[^\/]+\/status\/\d+)/i) ||
     url.match(/(https?:\/\/(?:www\.)?x\.com\/i\/status\/\d+)/i) ||
@@ -74,20 +67,24 @@ function pickBestMedia(mediaArr = []) {
 }
 
 async function getTwitterFromApi(url) {
-  const { data, status } = await axios.post(
+  const response = await axios.post(
     ENDPOINT,
     { url },
     {
       headers: {
-        apikey: API_KEY,
-        Authorization: `Bearer ${API_KEY}`,
+        apikey: API_KEY,                    // ← SOLO este header (según la documentación)
         "Content-Type": "application/json",
         "User-Agent": UA,
       },
       timeout: MAX_TIMEOUT,
-      validateStatus: () => true,
+      validateStatus: () => true,           // para capturar errores nosotros
     }
   );
+
+  const { data, status } = response;
+
+  // Para depuración temporal (puedes comentar estas líneas después)
+  // console.log("Respuesta API:", status, data);
 
   let j = data;
   if (typeof j === "string") {
@@ -122,7 +119,6 @@ async function getTwitterFromApi(url) {
 }
 
 async function downloadBuffer(url) {
-  // Reintento simple: a veces X responde raro, esto ayuda
   const headers = {
     "User-Agent": UA,
     Referer: "https://x.com/",
@@ -171,7 +167,7 @@ async function sendMedia(conn, job, asDocument, triggerMsg) {
 
     const fileNameBase = `twitter-${Date.now()}`;
     const fileName =
-      isVideo ? `${fileNameBase}.mp4` : isImage ? `${fileNameBase}.jpg` : `${fileNameBase}.bin`;
+      isVideo ? `\( {fileNameBase}.mp4` : isImage ? ` \){fileNameBase}.jpg` : `${fileNameBase}.bin`;
 
     const payload = asDocument
       ? { document: buf, mimetype, fileName, caption }
@@ -235,7 +231,6 @@ module.exports = async (msg, { conn, args }) => {
 ✦ 𝗘𝘀𝘁𝗮𝗱𝘀: ❤️ ${d.likes} · 💬 ${d.replies} · 🔁 ${d.retweets}
 ✦ 𝗙𝗲𝗰𝗵𝗮: ${fmtDate(d.date)}`;
 
-    // ✅ PREVIEW: si es imagen, mandamos BUFFER (evita 401)
     let preview;
     const previewMime = guessMime(d.mediaBest.type, d.mediaBest.url);
 
@@ -243,9 +238,7 @@ module.exports = async (msg, { conn, args }) => {
       let imgBuf = null;
       try {
         imgBuf = await downloadBuffer(d.mediaBest.url);
-      } catch {
-        imgBuf = null;
-      }
+      } catch {}
 
       if (imgBuf) {
         preview = await conn.sendMessage(
@@ -279,7 +272,6 @@ module.exports = async (msg, { conn, args }) => {
 
     await react(conn, chatId, msg.key, "✅");
 
-    // Listener único
     if (!conn._twitterInteractiveListener) {
       conn._twitterInteractiveListener = true;
 
@@ -288,7 +280,6 @@ module.exports = async (msg, { conn, args }) => {
           try {
             cleanOldJobs();
 
-            // --- Reacciones (👍 / ❤️) al preview ---
             if (m.message?.reactionMessage) {
               const { key: reactKey, text: emoji } = m.message.reactionMessage;
               const job = pendingTW[reactKey.id];
@@ -304,7 +295,6 @@ module.exports = async (msg, { conn, args }) => {
               continue;
             }
 
-            // --- Replies 1/2 citando el preview ---
             const ctx = m.message?.extendedTextMessage?.contextInfo;
             const replyTo = ctx?.stanzaId;
 
