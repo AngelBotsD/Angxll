@@ -16,7 +16,7 @@ const handler = async (msg, { conn, args }) => {
   console.log("URL recibida:", urlVideo);
 
   try {
-    const apiUrl = "https://api-sky.ultraplus.click/youtube-mp4/resolve";
+    const apiUrl = "https://api-sky.ultraplus.click/youtube-mp4";
     const apiKey = "Russellxz";
     const apiDomain = "https://api-sky.ultraplus.click"; // Base para arreglar el link
 
