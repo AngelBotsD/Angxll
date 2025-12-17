@@ -1,9 +1,8 @@
 
 // comandos/ytmp3.js — YouTube MP3 (URL)
 // ✅ Reacciones: 👍 (Audio) / ❤️ (Documento) o Respuestas 1 / 2
-// ✅ Muestra Banner (Thumbnail) si existe + Título
-// ✅ Multiuso: Puedes descargar varias veces (Audio y luego Doc) sin poner el comando de nuevo
-// ✅ Publicidad: Incluye link de la API
+// ✅ Mensaje de espera: "Descargando su canción..."
+// ✅ Branding: La Suki Bot + Link API
 
 "use strict";
 
@@ -93,7 +92,7 @@ module.exports = async (msg, { conn, args, command }) => {
     const title = d.title || "YouTube";
     const thumb = d.thumbnail;
 
-    // 2. Construir mensaje
+    // 2. Construir mensaje CON "LA SUKI BOT"
     const caption =
 `⚡ 𝗬𝗼𝘂𝗧𝘂𝗯𝗲 𝗠𝗣𝟯 — 𝗢𝗽𝗰𝗶𝗼𝗻𝗲𝘀
 
@@ -104,6 +103,7 @@ Elige cómo enviarlo:
 ❤️ 𝗔𝘂𝗱𝗶𝗼 𝗰𝗼𝗺𝗼 𝗱𝗼𝗰𝘂𝗺𝗲𝗻𝘁𝗼
 — o responde: 1 = audio · 2 = documento
 
+🤖 𝗕𝗼𝘁: La Suki Bot
 🔗 𝗔𝗣𝗜: https://api-sky.ultraplus.click`;
 
     let preview;
@@ -128,7 +128,7 @@ Elige cómo enviarlo:
       processing: false,
     };
 
-    // 4. Auto-limpieza a los 10 minutos (para liberar memoria)
+    // 4. Auto-limpieza a los 10 minutos
     setTimeout(() => {
         if (pendingYTA[preview.key.id]) {
             delete pendingYTA[preview.key.id];
@@ -153,13 +153,11 @@ Elige cómo enviarlo:
               if (job.chatId !== m.key.remoteJid) continue;
               if (emoji !== "👍" && emoji !== "❤️") continue;
 
-              if (job.processing) continue; // Evita spam de clics
+              if (job.processing) continue; 
               job.processing = true;
 
               const asDoc = emoji === "❤️";
               await sendMp3(conn, job, asDoc, m);
-              
-              // NO BORRAMOS el job aquí, para permitir cambiar de opción
               continue;
             }
 
@@ -179,8 +177,6 @@ Elige cómo enviarlo:
 
               const asDoc = body === "2";
               await sendMp3(conn, job, asDoc, m);
-              
-              // NO BORRAMOS el job aquí
             }
           } catch (e) {
             console.error("YTMP3 listener error:", e);
@@ -205,8 +201,17 @@ async function sendMp3(conn, job, asDocument, triggerMsg) {
   try {
       await conn.sendMessage(chatId, { react: { text: asDocument ? "📁" : "🎵", key: triggerMsg.key } });
       
-      // Mensaje opcional de "Enviando..."
-      // await conn.sendMessage(chatId, { text: `⏳ Enviando audio${asDocument ? " como documento" : ""}…` }, { quoted: quotedBase });
+      // ✅ MENSAJE DE ESPERA AGREGADO AQUÍ
+      await conn.sendMessage(chatId, { 
+          text: "⏳ Espere, descargando su canción..." 
+      }, { quoted: quotedBase });
+
+      // Caption final para el documento
+      const finalCaption = 
+`🎵 𝗧𝗶́𝘁𝘂𝗹𝗼: ${title}
+
+🤖 𝗕𝗼𝘁: La Suki Bot
+🔗 𝗔𝗣𝗜 𝘂𝘀𝗮𝗱𝗮: https://api-sky.ultraplus.click`;
 
       await conn.sendMessage(
         chatId,
@@ -214,8 +219,8 @@ async function sendMp3(conn, job, asDocument, triggerMsg) {
           [asDocument ? "document" : "audio"]: { url: audioSrc },
           mimetype: "audio/mpeg",
           fileName: asDocument ? `${safeBaseFromTitle(title)}.mp3` : undefined,
-          // Si es audio normal (nota de voz/música), ptt=false para que sea canción
-          ptt: false 
+          ptt: false,
+          caption: asDocument ? finalCaption : undefined // Caption solo funciona bien en documentos
         },
         { quoted: quotedBase }
       );
@@ -226,7 +231,6 @@ async function sendMp3(conn, job, asDocument, triggerMsg) {
       console.error("Error enviando MP3", e);
       await conn.sendMessage(chatId, { text: "❌ Error enviando el archivo." }, { quoted: quotedBase });
   } finally {
-      // Liberamos el job para que puedan pedirlo de nuevo (ej: pidieron audio, ahora quieren doc)
       job.processing = false; 
   }
 }
