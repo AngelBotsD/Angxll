@@ -1,6 +1,7 @@
+// commands/play.js — YouTube Play (Buscador + Descarga)
+// ✅ Publicidad agregada en el caption del video final
+// ✅ Soporta Calidad, Reacciones y Respuestas Citadas
 
-
-// commands/play.js
 "use strict";
 
 const axios = require("axios");
@@ -19,7 +20,7 @@ const API_KEY = process.env.API_KEY || "Russellxz";
 // Defaults
 const DEFAULT_VIDEO_QUALITY = "360";
 const DEFAULT_AUDIO_FORMAT = "mp3";
-const MAX_MB = 99;
+const MAX_MB = 200; // Aumentado a 200MB para videos largos
 
 // Calidades válidas (de tu API)
 const VALID_QUALITIES = new Set(["144", "240", "360", "720", "1080", "1440", "4k"]);
@@ -51,24 +52,16 @@ function ensureTmp() {
 
 function extractQualityFromText(input = "") {
   const t = String(input || "").toLowerCase();
-
-  // 4k
   if (t.includes("4k")) return "4k";
-
-  // 144|240|360|720|1080|1440 (con o sin p)
   const m = t.match(/\b(144|240|360|720|1080|1440)\s*p?\b/);
   if (m && VALID_QUALITIES.has(m[1])) return m[1];
-
   return "";
 }
 
 function splitQueryAndQuality(rawText = "") {
-  // Permite: ".play ozuna 720" => query="ozuna", quality="720"
-  // Si no hay calidad => query=rawText, quality=""
   const t = String(rawText || "").trim();
   if (!t) return { query: "", quality: "" };
 
-  // busca quality al final
   const parts = t.split(/\s+/);
   const last = (parts[parts.length - 1] || "").toLowerCase();
 
@@ -103,7 +96,6 @@ async function downloadToFile(url, filePath) {
     Accept: "*/*",
   };
 
-  // si descargas desde TU API (/youtube/dl) necesitas apikey
   if (isApiUrl(url)) headers["apikey"] = API_KEY;
 
   const res = await axios.get(url, {
@@ -124,7 +116,6 @@ async function downloadToFile(url, filePath) {
 
 // ---------- API ----------
 async function callYoutubeResolve(videoUrl, { type, quality, format }) {
-  // POST /youtube/resolve
   const endpoint = `${API_BASE}/youtube/resolve`;
 
   const body =
@@ -151,11 +142,9 @@ async function callYoutubeResolve(videoUrl, { type, quality, format }) {
   const result = data.result || data.data || data;
   if (!result?.media) throw new Error("API sin media");
 
-  // dl_download puede venir como "/youtube/dl?...."
   let dl = result.media.dl_download || "";
   if (dl && typeof dl === "string" && dl.startsWith("/")) dl = API_BASE + dl;
 
-  // fallback directo
   const direct = result.media.direct || "";
 
   return {
@@ -170,8 +159,6 @@ async function callYoutubeResolve(videoUrl, { type, quality, format }) {
 // ---------- main ----------
 module.exports = async (msg, { conn, text }) => {
   const pref = global.prefixes?.[0] || ".";
-
-  // parse: ".play ozuna 720"
   const { query, quality } = splitQueryAndQuality(text);
 
   if (!query) {
@@ -192,8 +179,6 @@ module.exports = async (msg, { conn, text }) => {
 
   const { url: videoUrl, title, timestamp: duration, views, author, thumbnail } = video;
   const viewsFmt = (views || 0).toLocaleString();
-
-  // calidad elegida por el usuario (si no, default 360)
   const chosenQuality = VALID_QUALITIES.has(quality) ? quality : DEFAULT_VIDEO_QUALITY;
 
   const caption = `
@@ -234,7 +219,7 @@ module.exports = async (msg, { conn, text }) => {
     title,
     thumbnail,
     commandMsg: msg,
-    videoQuality: chosenQuality, // ✅ aquí queda guardado
+    videoQuality: chosenQuality,
   };
 
   await conn.sendMessage(msg.key.remoteJid, { react: { text: "✅", key: msg.key } });
@@ -249,65 +234,46 @@ module.exports = async (msg, { conn, text }) => {
         if (m.message?.reactionMessage) {
           const { key: reactKey, text: emoji } = m.message.reactionMessage;
           const job = pending[reactKey.id];
-          if (job) await handleDownload(conn, job, emoji, job.commandMsg, "");
+          if (job) await handleDownload(conn, job, emoji, job.commandMsg);
         }
 
         // 2) RESPUESTAS CITADAS
         try {
           const context = m.message?.extendedTextMessage?.contextInfo;
           const citado = context?.stanzaId;
-
-          const textoRaw =
-            m.message?.conversation ||
-            m.message?.extendedTextMessage?.text ||
-            "";
-          const texto = String(textoRaw || "").trim().toLowerCase();
-
+          const texto = String(m.message?.conversation || m.message?.extendedTextMessage?.text || "").trim().toLowerCase();
           const job = pending[citado];
           const chatId = m.key.remoteJid;
 
           if (citado && job) {
-            // permite "video 720" o "2 720"
             const qFromReply = extractQualityFromText(texto);
 
-            // AUDIO
             if (["1", "audio", "4", "audiodoc"].includes(texto.split(/\s+/)[0])) {
               const docMode = texto.startsWith("4") || texto.includes("audiodoc");
               await conn.sendMessage(chatId, { react: { text: docMode ? "📄" : "🎵", key: m.key } });
               await conn.sendMessage(chatId, { text: `🎶 Descargando audio (mp3)...` }, { quoted: m });
               await downloadAudio(conn, job, docMode, m);
             }
-            // VIDEO
             else if (["2", "video", "3", "videodoc"].includes(texto.split(/\s+/)[0])) {
               const docMode = texto.startsWith("3") || texto.includes("videodoc");
-
-              // si el usuario especificó quality en la respuesta, úsalo
               const useQuality = VALID_QUALITIES.has(qFromReply) ? qFromReply : (job.videoQuality || DEFAULT_VIDEO_QUALITY);
 
               await conn.sendMessage(chatId, { react: { text: docMode ? "📁" : "🎬", key: m.key } });
               await conn.sendMessage(chatId, { text: `🎥 Descargando video (${useQuality === "4k" ? "4K" : useQuality + "p"})...` }, { quoted: m });
               await downloadVideo(conn, { ...job, videoQuality: useQuality }, docMode, m);
             } else {
-              await conn.sendMessage(
-                chatId,
-                { text: `⚠️ Opciones:\n1/audio, 4/audiodoc → audio\n2/video, 3/videodoc → video\n\nEj: "video 720"` },
-                { quoted: m }
-              );
+              await conn.sendMessage(chatId, { text: `⚠️ Opciones:\n1/audio → audio\n2/video → video\nEj: "video 720"` }, { quoted: m });
             }
 
-            if (!job._timer) {
-              job._timer = setTimeout(() => delete pending[citado], 5 * 60 * 1000);
-            }
+            if (!job._timer) job._timer = setTimeout(() => delete pending[citado], 10 * 60 * 1000);
           }
-        } catch (e) {
-          console.error("Error en detector citado:", e);
-        }
+        } catch (e) {}
       }
     });
   }
 };
 
-async function handleDownload(conn, job, choice, quoted, extraText) {
+async function handleDownload(conn, job, choice, quoted) {
   const mapping = { "👍": "audio", "❤️": "video", "📄": "audioDoc", "📁": "videoDoc" };
   const key = mapping[choice];
   if (!key) return;
@@ -319,7 +285,6 @@ async function handleDownload(conn, job, choice, quoted, extraText) {
     return downloadAudio(conn, job, isDoc, quoted || job.commandMsg);
   }
 
-  // video
   const useQuality = job.videoQuality || DEFAULT_VIDEO_QUALITY;
   await conn.sendMessage(job.chatId, { text: `⏳ Descargando video (${useQuality === "4k" ? "4K" : useQuality + "p"})...` }, { quoted: quoted || job.commandMsg });
   return downloadVideo(conn, job, isDoc, quoted || job.commandMsg);
@@ -344,23 +309,15 @@ async function downloadAudio(conn, job, asDocument, quoted) {
 
   const tmp = ensureTmp();
   const base = safeName(title);
-
   const inFile = path.join(tmp, `${Date.now()}_in.bin`);
   await downloadToFile(mediaUrl, inFile);
 
-  // Convertir a mp3 siempre (si falla, manda como doc)
   const outMp3 = path.join(tmp, `${Date.now()}_${base}.mp3`);
   let outFile = outMp3;
 
   try {
     await new Promise((resolve, reject) => {
-      ffmpeg(inFile)
-        .audioCodec("libmp3lame")
-        .audioBitrate("128k")
-        .format("mp3")
-        .save(outMp3)
-        .on("end", resolve)
-        .on("error", reject);
+      ffmpeg(inFile).audioCodec("libmp3lame").audioBitrate("128k").format("mp3").save(outMp3).on("end", resolve).on("error", reject);
     });
     try { fs.unlinkSync(inFile); } catch {}
   } catch {
@@ -371,7 +328,7 @@ async function downloadAudio(conn, job, asDocument, quoted) {
   const sizeMB = fileSizeMB(outFile);
   if (sizeMB > MAX_MB) {
     try { fs.unlinkSync(outFile); } catch {}
-    await conn.sendMessage(chatId, { text: `❌ El audio pesa ${sizeMB.toFixed(2)}MB (> ${MAX_MB}MB).` }, { quoted });
+    await conn.sendMessage(chatId, { text: `❌ Audio > ${MAX_MB}MB.` }, { quoted });
     return;
   }
 
@@ -381,6 +338,8 @@ async function downloadAudio(conn, job, asDocument, quoted) {
       [asDocument ? "document" : "audio"]: fs.readFileSync(outFile),
       mimetype: "audio/mpeg",
       fileName: `${base}.mp3`,
+      // ✅ Publicidad también en el audio si es documento
+      caption: asDocument ? `🎵 ${title}\n\n🤖 La Suki Bot\n🔗 https://api-sky.ultraplus.click` : undefined 
     },
     { quoted }
   );
@@ -390,7 +349,6 @@ async function downloadAudio(conn, job, asDocument, quoted) {
 
 async function downloadVideo(conn, job, asDocument, quoted) {
   const { chatId, videoUrl, title } = job;
-
   const q = VALID_QUALITIES.has(job.videoQuality) ? job.videoQuality : DEFAULT_VIDEO_QUALITY;
 
   let resolved;
@@ -417,9 +375,17 @@ async function downloadVideo(conn, job, asDocument, quoted) {
   const sizeMB = fileSizeMB(file);
   if (sizeMB > MAX_MB) {
     try { fs.unlinkSync(file); } catch {}
-    await conn.sendMessage(chatId, { text: `❌ El video pesa ${sizeMB.toFixed(2)}MB (> ${MAX_MB}MB).` }, { quoted });
+    await conn.sendMessage(chatId, { text: `❌ Video > ${MAX_MB}MB.` }, { quoted });
     return;
   }
+
+  // ✅ CAPTION CON PUBLICIDAD AGREGADO
+  const finalCaption = 
+`🎬 𝗩𝗶𝗱𝗲𝗼: ${title}
+⚡ 𝗖𝗮𝗹𝗶𝗱𝗮𝗱: ${tag}
+
+🤖 𝗕𝗼𝘁: La Suki Bot
+🔗 𝗔𝗣𝗜 𝘂𝘀𝗮𝗱𝗮: https://api-sky.ultraplus.click`;
 
   await conn.sendMessage(
     chatId,
@@ -427,7 +393,7 @@ async function downloadVideo(conn, job, asDocument, quoted) {
       [asDocument ? "document" : "video"]: fs.readFileSync(file),
       mimetype: "video/mp4",
       fileName: `${base}_${tag}.mp4`,
-      caption: asDocument ? undefined : `🎬 Aquí está tu video (${tag})`,
+      caption: asDocument ? finalCaption : finalCaption, // Caption siempre visible
     },
     { quoted }
   );
@@ -436,3 +402,4 @@ async function downloadVideo(conn, job, asDocument, quoted) {
 }
 
 module.exports.command = ["play2"];
+
