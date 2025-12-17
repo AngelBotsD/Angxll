@@ -1,4 +1,3 @@
-
 const fetch = require("node-fetch");
 
 const handler = async (msg, { conn, args }) => {
@@ -11,15 +10,15 @@ const handler = async (msg, { conn, args }) => {
   }
 
   await conn.sendMessage(chatId, { react: { text: '⏳', key: msg.key } });
-
+  
+  // LOGS para debug
   console.log("--- INICIANDO COMANDO YTMP4 ---");
   console.log("URL recibida:", urlVideo);
 
   try {
     const apiUrl = "https://api-sky.ultraplus.click/youtube-mp4/resolve";
     const apiKey = "Russellxz";
-
-    console.log("Enviando petición a:", apiUrl);
+    const apiDomain = "https://api-sky.ultraplus.click"; // Base para arreglar el link
 
     // 2. Petición a la API
     const response = await fetch(apiUrl, {
@@ -35,39 +34,25 @@ const handler = async (msg, { conn, args }) => {
       })
     });
 
-    console.log("Estatus HTTP:", response.status);
+    const json = await response.json();
 
-    // 3. Obtener respuesta como TEXTO primero (para ver si devuelve HTML de error)
-    const rawText = await response.text();
-    console.log("Respuesta cruda del servidor:", rawText);
-
-    // 4. Intentar convertir a JSON
-    let json;
-    try {
-      json = JSON.parse(rawText);
-    } catch (e) {
-      throw new Error("La API no devolvió un JSON válido. Respuesta: " + rawText.slice(0, 50) + "...");
-    }
-
-    // 5. Verificar si la API dio error lógico (status: false)
-    if (!json.status) {
-      throw new Error(json.message || "Error desconocido en la API.");
-    }
-
-    if (!json.result || !json.result.media) {
-      throw new Error("El JSON no tiene la propiedad 'result.media'.");
+    if (!json.status || !json.result || !json.result.media) {
+      throw new Error("Respuesta inválida de la API.");
     }
 
     const { title, media } = json.result;
-    const videoUrl = media.dl_inline || media.dl_download;
+    
+    // 3. CORRECCIÓN DEL LINK (Aquí estaba el error)
+    let videoUrl = media.dl_inline || media.dl_download;
 
-    console.log("URL del video obtenida:", videoUrl);
-
-    if (!videoUrl) {
-      throw new Error("La API respondió OK, pero no devolvió link de video.");
+    // Si el link empieza con "/", le falta el dominio. Se lo pegamos:
+    if (videoUrl.startsWith("/")) {
+        videoUrl = apiDomain + videoUrl;
     }
 
-    // 6. Enviar video
+    console.log("URL FINAL CORREGIDA:", videoUrl);
+
+    // 4. Enviar video
     await conn.sendMessage(chatId, { 
       video: { url: videoUrl }, 
       caption: `🎥 *${title}*\n\n⚡ SkyUltraPlus API`,
@@ -75,19 +60,15 @@ const handler = async (msg, { conn, args }) => {
     }, { quoted: msg });
 
     await conn.sendMessage(chatId, { react: { text: '✅', key: msg.key } });
-    console.log("--- COMANDO FINALIZADO CON ÉXITO ---");
 
   } catch (e) {
-    console.error("❌ ERROR CRÍTICO EN YTMP4:", e);
-    
-    // ENVIAR EL ERROR REAL AL CHAT
+    console.error("❌ ERROR:", e);
     await conn.sendMessage(chatId, { 
-      text: `❌ *Debug Error:*\n${e.message}` 
+      text: `❌ *Error:* ${e.message}` 
     }, { quoted: msg });
-    
-    await conn.sendMessage(chatId, { react: { text: '❌', key: msg.key } });
   }
 };
 
-handler.command = ['yt4', '4'];
+handler.command = ['yt4', 'ytt4'];
 module.exports = handler;
+
