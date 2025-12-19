@@ -1,11 +1,11 @@
-const { generateWAMessageFromContent, downloadContentFromMessage } from '@whiskeysockets/baileys'
-const fetch from 'node-fetch'
+const { generateWAMessageFromContent, downloadContentFromMessage } = require('@whiskeysockets/baileys');
+const fetch = require('node-fetch');
 
-let thumb = null
+let thumb = null;
 fetch('https://cdn.russellxz.click/28a8569f.jpeg')
   .then(r => r.arrayBuffer())
-  .then(buf => thumb = Buffer.from(buf))
-  .catch(() => null)
+  .then(buf => (thumb = Buffer.from(buf)))
+  .catch(() => null);
 
 function unwrapMessage(m = {}) {
   let n = m;
@@ -51,7 +51,7 @@ const handler = async (m, { conn, participants }) => {
 
   const fkontak = {
     key: {
-      participants: '0@s.whatsapp.net',
+      participant: '0@s.whatsapp.net',
       remoteJid: 'status@broadcast',
       fromMe: false,
       id: 'Angel'
@@ -66,12 +66,13 @@ const handler = async (m, { conn, participants }) => {
   };
 
   const content = getMessageText(m);
-const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
+  const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
 
   await conn.sendMessage(m.chat, { react: { text: '🗣️', key: m.key } });
 
   const seen = new Set();
   const users = [];
+
   for (const p of participants) {
     const jid = conn.decodeJid(p.id);
     if (!seen.has(jid)) {
@@ -90,13 +91,10 @@ const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
     'stickerMessage'
   ].includes(mtype);
 
-  const content = getMessageText(m);
-const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
   const originalCaption = (q.msg?.caption || q.text || '').trim();
   const finalCaption = userText || originalCaption || '🔊 Notificación';
 
   try {
-
     if (isMedia) {
       let buffer = null;
 
@@ -105,7 +103,7 @@ const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
         buffer = await downloadMedia(q[mtype], detected);
       }
 
-      if (!buffer) buffer = await q.download();
+      if (!buffer && q.download) buffer = await q.download();
 
       const msg = { mentions: users };
 
@@ -117,7 +115,11 @@ const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
         await conn.sendMessage(m.chat, msg, { quoted: fkontak });
 
         if (userText) {
-          await conn.sendMessage(m.chat, { text: userText, mentions: users }, { quoted: fkontak });
+          await conn.sendMessage(
+            m.chat,
+            { text: userText, mentions: users },
+            { quoted: fkontak }
+          );
         }
         return;
       }
@@ -125,12 +127,10 @@ const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
       if (mtype === 'imageMessage') {
         msg.image = buffer;
         msg.caption = finalCaption;
-
       } else if (mtype === 'videoMessage') {
         msg.video = buffer;
         msg.caption = finalCaption;
         msg.mimetype = 'video/mp4';
-
       } else if (mtype === 'stickerMessage') {
         msg.sticker = buffer;
       }
@@ -139,7 +139,6 @@ const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
     }
 
     if (m.quoted && !isMedia) {
-
       const newMsg = conn.cMod(
         m.chat,
         generateWAMessageFromContent(
@@ -167,9 +166,7 @@ const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
       { text: finalCaption, mentions: users },
       { quoted: fkontak }
     );
-
   } catch (err) {
-
     return await conn.sendMessage(
       m.chat,
       { text: '🔊 Notificación', mentions: users },
@@ -178,7 +175,7 @@ const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
   }
 };
 
-handler.command = ["tag", "n", "notify"];
+handler.command = ['tag', 'n', 'notify'];
 handler.group = true;
 handler.admin = true;
 
