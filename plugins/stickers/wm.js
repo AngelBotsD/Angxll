@@ -1,5 +1,5 @@
-import crypto from 'crypto'
-import webp from 'node-webpmux'
+const crypto = require('crypto')
+const webp = require('node-webpmux')
 
 async function addExif(stickerBuffer, packname = '') {
   const img = new webp.Image()
@@ -42,25 +42,20 @@ let handler = async (m, { conn, text }) => {
       return conn.sendMessage(
         m.chat,
         {
-          text: `*𝖱𝖾𝗌𝗉𝗈𝗇𝖽𝖾 𝖠 𝖴𝗇 𝖲𝗍𝗂𝖼𝗄𝖾𝗋 𝖯𝖺𝗋𝖺 𝖢𝖺𝗆𝖻𝗂𝖺𝗋𝗅𝖾 𝖤𝗅 𝖶𝗆*`,
-          ...global.rcanal
+          text: `*𝖱𝖾𝗌𝗉𝗈𝗇𝖽𝖾 𝖠 𝖴𝗇 𝖲𝗍𝗂𝖼𝗄𝖾𝗋 𝖯𝖺𝗋𝖺 𝖢𝖺𝗆𝖻𝗂𝖺𝗋𝗅𝖾 𝖤𝗅 𝖶𝗆*`
         },
         { quoted: m }
       )
 
     let clean = (text || '').trim()
-    let packname = ''
-
-    if (clean) packname = clean
-    else packname = m.pushName || 'Usuario'
+    let packname = clean || m.pushName || 'Usuario'
 
     let media = await q.download()
     if (!media)
       return conn.sendMessage(
         m.chat,
         {
-          text: `*𝖤𝗋𝗋𝗈𝗋 𝖺𝗅 𝖣𝖤𝗌𝖢𝖠𝖱𝖦𝖠𝗋 𝖤𝖫 𝖲𝗍𝗂𝖼𝗄𝖾𝗋*`,
-          ...global.rcanal
+          text: `*𝖤𝗋𝗋𝗈𝗋 𝖺𝗅 𝖣𝖤𝗌𝖢𝖠𝖱𝖦𝖠𝗋 𝖤𝖫 𝖲𝗍𝗂𝖼𝗄𝖾𝗋*`
         },
         { quoted: m }
       )
@@ -69,10 +64,7 @@ let handler = async (m, { conn, text }) => {
 
     await conn.sendMessage(
       m.chat,
-      {
-        sticker: buffer,
-        ...global.rcanal
-      },
+      { sticker: buffer },
       { quoted: m }
     )
 
@@ -80,11 +72,10 @@ let handler = async (m, { conn, text }) => {
 
   } catch (e) {
     console.error(e)
-    conn.sendMessage(
+    await conn.sendMessage(
       m.chat,
       {
-        text: `*𝖮𝖢𝖴𝖱𝖱𝖨𝖮 𝖴Ν 𝖤𝖱𝖱𝖮𝖱 𝖠𝖫 𝖯𝖱𝖮𝖢𝖤𝖲𝖠𝖱 𝖤𝖫 𝖲𝖳𝖨𝖢𝖪𝖤𝖱*`,
-        ...global.rcanal
+        text: `*𝖮𝖢𝖴𝖱𝖱𝖨𝖮 𝖴Ν 𝖤𝖱𝖱𝖮𝖱 𝖠𝖫 𝖯𝖱𝖮𝖢𝖤𝖲𝖠𝖱 𝖤𝖫 𝖲𝖳𝖨𝖢𝖪𝖤𝖱*`
       },
       { quoted: m }
     )
@@ -95,4 +86,4 @@ handler.help = ["𝖶𝗆 <𝖳𝖾𝗑𝗍𝗈>"]
 handler.tags = ["𝖲𝖳𝖨𝖢𝖪𝖤𝖱𝖲"]
 handler.command = ['wm', 'robar', 'robarsticker']
 
-export default handler
+module.exports = handler
