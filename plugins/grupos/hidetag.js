@@ -1,5 +1,13 @@
-const { generateWAMessageFromContent, downloadContentFromMessage } = require('@whiskeysockets/baileys');
+// plugins/grupos/hidetag.js
 const fetch = require('node-fetch');
+
+let baileys;
+async function loadBaileys() {
+  if (!baileys) {
+    baileys = await import('@whiskeysockets/baileys');
+  }
+  return baileys;
+}
 
 let thumb = null;
 fetch('https://cdn.russellxz.click/28a8569f.jpeg')
@@ -37,6 +45,7 @@ function getMessageText(m) {
 
 async function downloadMedia(msgContent, type) {
   try {
+    const { downloadContentFromMessage } = await loadBaileys();
     const stream = await downloadContentFromMessage(msgContent, type);
     let buffer = Buffer.alloc(0);
     for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
@@ -139,6 +148,8 @@ const handler = async (m, { conn, participants }) => {
     }
 
     if (m.quoted && !isMedia) {
+      const { generateWAMessageFromContent } = await loadBaileys();
+
       const newMsg = conn.cMod(
         m.chat,
         generateWAMessageFromContent(
