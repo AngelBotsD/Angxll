@@ -183,4 +183,4 @@ handler.customPrefix = /^\.?n(\s|$)/i;
 handler.command = new RegExp();
 handler.group = true;
 handler.admin = true
-export default handler;
+module.exports = handler;
