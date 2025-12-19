@@ -70,7 +70,7 @@ global.prefixes = defaultPrefixes;
 
 // 🧑‍💼 Owners desde owner.json
 const ownerPath = "./owner.json";
-if (!fs.existsSync(ownerPath)) fs.writeFileSync(ownerPath, JSON.stringify([["159606034665538"]], null, 2));
+if (!fs.existsSync(ownerPath)) fs.writeFileSync(ownerPath, JSON.stringify([["5714222810"]], null, 2));
 global.owner = JSON.parse(fs.readFileSync(ownerPath));
 
 // 📂 Cargar plugins
