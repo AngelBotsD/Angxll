@@ -504,38 +504,6 @@ try {
 }
 /* === FIN STICKER → COMANDO === */
   
-  //fin de la logica modo admins         
-// ——— Presentación automática (solo una vez por grupo) ———
-  if (isGroup) {
-    const welcomePath = path.resolve("setwelcome.json");
-    // Asegurarnos de que existe y cargar
-    if (!fs.existsSync(welcomePath)) fs.writeFileSync(welcomePath, "{}");
-    const welcomeData = JSON.parse(fs.readFileSync(welcomePath, "utf-8"));
-
-    welcomeData[chatId] = welcomeData[chatId] || {};
-    if (!welcomeData[chatId].presentationSent) {
-      // Enviar vídeo de presentación
-      await sock.sendMessage(chatId, {
-        video: { url: "https://cdn.russellxz.click/bc06f25b.mp4" },
-        caption: `
-🎉 ¡Hola a todos! 🎉
-
-👋 Soy *La Suki Bot*, un bot programado 🤖.  
-📸 A veces reacciono o envío multimedia porque así me diseñaron.  
-
-⚠️ *Lo que diga no debe ser tomado en serio.* 😉
-
-📌 Usa el comando *.menu* o *.menugrupo* para ver cómo usarme y programar cosas.  
-Soy un bot *sencillo y fácil de usar*, ¡gracias por tenerme en el grupo! 💖  
-        `.trim()
-      });
-      // Marcar como enviado y guardar
-      welcomeData[chatId].presentationSent = true;
-      fs.writeFileSync(welcomePath, JSON.stringify(welcomeData, null, 2));
-    }
-  }
-  //fin de la logica
-  
 // === INICIO LÓGICA CHATGPT POR GRUPO CON activos.db ===
 try {
   const { getConfig } = requireFromRoot("db");
