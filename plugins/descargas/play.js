@@ -1,11 +1,11 @@
-import axios from "axios"
-import yts from "yt-search"
-import fs from "fs"
-import path from "path"
-import ffmpeg from "fluent-ffmpeg"
-import { promisify } from "util"
-import { pipeline } from "stream"
-import crypto from "crypto"
+const axios = require("axios")
+const yts = require("yt-search")
+const fs = require("fs")
+const path = require("path")
+const ffmpeg = require("fluent-ffmpeg")
+const { promisify } = require("util")
+const { pipeline } = require("stream")
+const crypto = require("crypto")
 
 const streamPipe = promisify(pipeline)
 
