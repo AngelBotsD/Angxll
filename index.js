@@ -1,4 +1,4 @@
-let canalId = ["120363266665814365@newsletter"];  
+let canalId = ["120363402177795471@newsletter"];  
 let canalNombre = ["👑 LA SUKI BOT 👑"]
   function setupConnection(conn) {
   conn.sendMessage2 = async (chat, content, m, options = {}) => {
