@@ -344,7 +344,4 @@ async function handler(msg, { conn, text }) {
   })
 }
 
-handler.help = ["play <texto>"]
-handler.tags = ["descargas"]
-handler.command = ["play"]
-module.exports = handler
+module.exports.command = ["play"];
