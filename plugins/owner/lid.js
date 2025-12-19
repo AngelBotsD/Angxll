@@ -33,5 +33,4 @@ handler.tags = ["𝖮𝖶𝖭𝖤𝖱"]
 handler.command = ['lid', 'mylid', 'tulid']
 handler.group = true
 handler.rowner = true
-
-export default handler
+module.exports = handler;
