@@ -224,7 +224,7 @@ function addPending(id, data) {
   setTimeout(() => delete pending[id], 15 * 60 * 1000)
 }
 
-export default async function handler(msg, { conn, text }) {
+async function handler(msg, { conn, text }) {
   const pref = global.prefixes?.[0] || "."
 
   if (!text?.trim()) {
@@ -347,3 +347,4 @@ export default async function handler(msg, { conn, text }) {
 handler.help = ["play <texto>"]
 handler.tags = ["descargas"]
 handler.command = ["play"]
+module.exports = handler
