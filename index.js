@@ -1,5 +1,5 @@
 let canalId = ["120363402177795471@newsletter"];  
-let canalNombre = ["👑 LA SUKI BOT 👑"]
+let canalNombre = ["Angel Bot"]
   function setupConnection(conn) {
   conn.sendMessage2 = async (chat, content, m, options = {}) => {
     const firstChannel = { 
