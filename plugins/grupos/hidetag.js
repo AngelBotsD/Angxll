@@ -66,7 +66,7 @@ const handler = async (m, { conn, participants }) => {
   };
 
   const content = getMessageText(m);
-  if (!/^\.?n(\s|$)/i.test(content.trim())) return;
+const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
 
   await conn.sendMessage(m.chat, { react: { text: '🗣️', key: m.key } });
 
@@ -90,7 +90,8 @@ const handler = async (m, { conn, participants }) => {
     'stickerMessage'
   ].includes(mtype);
 
-  const userText = content.trim().replace(/^\.?n(\s|$)/i, '');
+  const content = getMessageText(m);
+const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
   const originalCaption = (q.msg?.caption || q.text || '').trim();
   const finalCaption = userText || originalCaption || '🔊 Notificación';
 
