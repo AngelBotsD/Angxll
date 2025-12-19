@@ -52,7 +52,7 @@ const handler = async (msg, { conn, wa }) => {
      return conn.sendMessage(
       chatId,
       {
-        text: `⚠️ *Responde a una imagen o video para crear un sticker.*\n\n✳️ Ejemplo:\n${pref}s (respondiendo a una imagen)`,
+        text: `⚠️ *Responde a una imagen o video para crear un sticker.`,
       },
       { quoted: msg }
     );
@@ -93,10 +93,10 @@ const handler = async (msg, { conn, wa }) => {
 
   } catch (err) {
     await conn.sendMessage(
-      chatId,
-      { text: "❌ Hubo un error al crear el sticker.", ...global.rcanal },
-      { quoted: msg }
-    );
+  chatId,
+  { text: "❌ Hubo un error al crear el sticker." },
+  { quoted: msg }
+);
 
     await conn.sendMessage(chatId, { react: { text: "❌", key: msg.key } });
   }
@@ -106,7 +106,7 @@ handler.help = ["𝖲"]
 handler.tags = ["𝖲𝖳𝖨𝖢𝖪𝖤𝖱𝖲"]
 handler.customPrefix = /^(\.s|s)$/i
 handler.command = new RegExp
-export default handler;
+module.exports = handler;
 
 async function imageToWebp(media) {
   const tmpIn = path.join(tempFolder, randomFileName("jpg"));
