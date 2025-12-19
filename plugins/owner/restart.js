@@ -1,25 +1,38 @@
-const handler = async (m, { conn, isROwner, text }) => {
-    try {
-        const { key } = await conn.sendMessage(m.chat, { text: `🚀🚀` }, { quoted: m })
-        await delay(1000)
-        await conn.sendMessage(m.chat, { text: `🚀🚀🚀🚀`, edit: key })
-        await delay(1000)
-        await conn.sendMessage(m.chat, { text: `🚀🚀🚀🚀🚀🚀`, edit: key })
-        await conn.sendMessage(m.chat, { text: `𝙍𝙚𝙞𝙣𝙞𝙘𝙞𝙖𝙧 | 𝙍𝙚𝙨𝙩𝙖𝙧𝙩`, edit: key })
+const fs = require("fs");
+const path = require("path");
 
-        process.exit(0)
+const handler = async (msg, { conn }) => {
+  const chatId = msg.key.remoteJid;
+  const senderId = (msg.key.participant || msg.key.remoteJid).replace(/[^0-9]/g, "");
+  const isFromMe = msg.key.fromMe;
 
-    } catch (error) {
-        console.log(error)
-        conn.reply(m.chat, `${error}`, m)
-    }
-}
+  const ownerPath = path.resolve("owner.json");
+  const owners = fs.existsSync(ownerPath) ? JSON.parse(fs.readFileSync(ownerPath)) : [];
+  const isOwner = owners.some(([id]) => id === senderId);
 
-handler.help = ['restart']
-handler.tags = ['owner']
-handler.command = ['res', 'reiniciar', 'restart']
-handler.owner = true
+  if (!isOwner && !isFromMe) {
+    await conn.sendMessage(chatId, {
+      text: "⛔ Este comando es solo para el *Owner*."
+    }, { quoted: msg });
+    return;
+  }
 
-export default handler
+  // Reacción 🔄
+  await conn.sendMessage(chatId, {
+    react: { text: "🔄", key: msg.key }
+  });
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  // Mensaje de aviso
+  await conn.sendMessage(chatId, {
+    text: "🔄 *Angel Bot Se está reiniciand, Espere un Momento*"
+  }, { quoted: msg });
+
+  // Guardar chat para notificar luego
+  const restartPath = path.resolve("lastRestarter.json");
+  fs.writeFileSync(restartPath, JSON.stringify({ chatId }, null, 2));
+
+  setTimeout(() => process.exit(1), 3000);
+};
+
+handler.command = ["rest", "restart"];
+module.exports = handler;
