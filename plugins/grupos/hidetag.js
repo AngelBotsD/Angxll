@@ -1,21 +1,11 @@
-// plugins/grupos/hidetag.js
-const fetch = require('node-fetch');
+// plugins/tag.js — ESM-safe, respeta texto original y orden
+const fs = require("fs");
+const path = require("path");
 
-let baileys;
-async function loadBaileys() {
-  if (!baileys) {
-    baileys = await import('@whiskeysockets/baileys');
-  }
-  return baileys;
-}
+const DIGITS = (s = "") => String(s || "").replace(/\D/g, "");
 
-let thumb = null;
-fetch('https://cdn.russellxz.click/28a8569f.jpeg')
-  .then(r => r.arrayBuffer())
-  .then(buf => (thumb = Buffer.from(buf)))
-  .catch(() => null);
-
-function unwrapMessage(m = {}) {
+// —— Unwrap helpers (view-once / efímeros) ——
+function unwrapMessage(m) {
   let n = m;
   while (
     n?.viewOnceMessage?.message ||
@@ -31,163 +21,199 @@ function unwrapMessage(m = {}) {
   }
   return n;
 }
-
-function getMessageText(m) {
-  const msg = unwrapMessage(m.message) || {};
+function getQuotedMessage(msg) {
+  const root = unwrapMessage(msg?.message) || {};
+  const ctx =
+    root?.extendedTextMessage?.contextInfo ||
+    root?.imageMessage?.contextInfo ||
+    root?.videoMessage?.contextInfo ||
+    root?.documentMessage?.contextInfo ||
+    root?.audioMessage?.contextInfo ||
+    root?.stickerMessage?.contextInfo ||
+    null;
+  return ctx?.quotedMessage ? unwrapMessage(ctx.quotedMessage) : null;
+}
+function getBodyRaw(msg) {
+  const m = unwrapMessage(msg?.message) || {};
   return (
-    m.text ||
-    m.msg?.caption ||
-    msg?.extendedTextMessage?.text ||
-    msg?.conversation ||
-    ''
+    m?.extendedTextMessage?.text ??
+    m?.conversation ??
+    ""
   );
 }
-
-async function downloadMedia(msgContent, type) {
+function extractAfterAlias(body, aliases = [], prefixes = ["."]) {
+  // NO recorta ni reordena; devuelve exactamente lo que viene tras el comando
+  const bodyLow = body.toLowerCase();
+  for (const p of prefixes) {
+    for (const a of aliases) {
+      const tag = (p + a).toLowerCase();
+      if (bodyLow.startsWith(tag)) {
+        let out = body.slice(tag.length);
+        // quita sólo un espacio inicial si existe (no más)
+        return out.startsWith(" ") ? out.slice(1) : out;
+      }
+    }
+  }
+  return "";
+}
+async function getDownloader(wa) {
+  if (wa && typeof wa.downloadContentFromMessage === "function")
+    return wa.downloadContentFromMessage;
   try {
-    const { downloadContentFromMessage } = await loadBaileys();
-    const stream = await downloadContentFromMessage(msgContent, type);
-    let buffer = Buffer.alloc(0);
-    for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
-    return buffer;
+    const m = await import("@whiskeysockets/baileys");
+    return m.downloadContentFromMessage;
   } catch {
     return null;
   }
 }
 
-const handler = async (m, { conn, participants }) => {
-  if (!m.isGroup || m.key.fromMe) return;
-
-  const fkontak = {
-    key: {
-      participant: '0@s.whatsapp.net',
-      remoteJid: 'status@broadcast',
-      fromMe: false,
-      id: 'Angel'
-    },
-    message: {
-      locationMessage: {
-        name: '𝖧𝗈𝗅𝖺, 𝖲𝗈𝗒 𝖠𝗇𝗀𝖾𝗅 𝖡𝗈𝗍',
-        jpegThumbnail: thumb
-      }
-    },
-    participant: '0@s.whatsapp.net'
-  };
-
-  const content = getMessageText(m);
-  const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
-
-  await conn.sendMessage(m.chat, { react: { text: '🗣️', key: m.key } });
-
-  const seen = new Set();
-  const users = [];
-
-  for (const p of participants) {
-    const jid = conn.decodeJid(p.id);
-    if (!seen.has(jid)) {
-      seen.add(jid);
-      users.push(jid);
-    }
-  }
-
-  const q = m.quoted ? unwrapMessage(m.quoted) : unwrapMessage(m);
-  const mtype = q.mtype || Object.keys(q.message || {})[0] || '';
-
-  const isMedia = [
-    'imageMessage',
-    'videoMessage',
-    'audioMessage',
-    'stickerMessage'
-  ].includes(mtype);
-
-  const originalCaption = (q.msg?.caption || q.text || '').trim();
-  const finalCaption = userText || originalCaption || '🔊 Notificación';
-
+const handler = async (msg, { conn, args, text, wa }) => {
   try {
-    if (isMedia) {
-      let buffer = null;
+    const chatId   = msg.key.remoteJid;
+    const isGroup  = chatId.endsWith("@g.us");
+    const senderId = msg.key.participant || msg.key.remoteJid;
+    const senderNum = DIGITS(senderId);
+    const isFromMe = !!msg.key.fromMe;
 
-      if (q[mtype]) {
-        const detected = mtype.replace('Message', '').toLowerCase();
-        buffer = await downloadMedia(q[mtype], detected);
-      }
-
-      if (!buffer && q.download) buffer = await q.download();
-
-      const msg = { mentions: users };
-
-      if (mtype === 'audioMessage') {
-        msg.audio = buffer;
-        msg.mimetype = 'audio/mpeg';
-        msg.ptt = false;
-
-        await conn.sendMessage(m.chat, msg, { quoted: fkontak });
-
-        if (userText) {
-          await conn.sendMessage(
-            m.chat,
-            { text: userText, mentions: users },
-            { quoted: fkontak }
-          );
-        }
-        return;
-      }
-
-      if (mtype === 'imageMessage') {
-        msg.image = buffer;
-        msg.caption = finalCaption;
-      } else if (mtype === 'videoMessage') {
-        msg.video = buffer;
-        msg.caption = finalCaption;
-        msg.mimetype = 'video/mp4';
-      } else if (mtype === 'stickerMessage') {
-        msg.sticker = buffer;
-      }
-
-      return await conn.sendMessage(m.chat, msg, { quoted: fkontak });
+    if (!isGroup) {
+      return conn.sendMessage(chatId, { text: "⚠️ Este comando solo se puede usar en grupos." }, { quoted: msg });
     }
 
-    if (m.quoted && !isMedia) {
-      const { generateWAMessageFromContent } = await loadBaileys();
+    const rawID   = conn.user?.id || "";
+    const botNum  = DIGITS(rawID.split(":")[0]);
+    const isBot   = botNum === senderNum;
+    const isOwner = Array.isArray(global.owner) && global.owner.some(([id]) => id === senderNum);
 
-      const newMsg = conn.cMod(
-        m.chat,
-        generateWAMessageFromContent(
-          m.chat,
-          {
-            [mtype || 'extendedTextMessage']:
-              q?.message?.[mtype] || { text: finalCaption }
-          },
-          { quoted: fkontak, userJid: conn.user.id }
-        ),
-        finalCaption,
-        conn.user.jid,
-        { mentions: users }
-      );
+    // Metadata del grupo
+    let meta;
+    try { meta = await conn.groupMetadata(chatId); }
+    catch (e) {
+      console.error("[tag] metadata error:", e);
+      return conn.sendMessage(chatId, { text: "❌ No pude leer la metadata del grupo." }, { quoted: msg });
+    }
+    const participantes = Array.isArray(meta?.participants) ? meta.participants : [];
 
-      return await conn.relayMessage(
-        m.chat,
-        newMsg.message,
-        { messageId: newMsg.key.id }
-      );
+    // ¿Es admin? (compat. LID)
+    const isAdmin = participantes.some(p => {
+      const ids = [p?.id, p?.jid].filter(Boolean);
+      const matchByDigits = ids.some(id => DIGITS(id) === senderNum);
+      const roleOK = p?.admin === "admin" || p?.admin === "superadmin";
+      return matchByDigits && roleOK;
+    });
+
+    if (!isAdmin && !isOwner && !isBot && !isFromMe) {
+      return conn.sendMessage(chatId, {
+        text: "❌ Solo admins, el owner o el bot pueden usar este comando."
+      }, { quoted: msg });
     }
 
-    return await conn.sendMessage(
-      m.chat,
-      { text: finalCaption, mentions: users },
-      { quoted: fkontak }
+    await conn.sendMessage(chatId, { react: { text: "🔊", key: msg.key } }).catch(() => {});
+
+    // Menciones en el MISMO orden que entrega WhatsApp
+    const seen = new Set();
+    const mentionsOrdered = [];
+    for (const p of participantes) {
+      const jid = p?.id || p?.jid;
+      if (!jid) continue;
+      const d = DIGITS(jid);
+      if (d && !seen.has(d)) {
+        seen.add(d);
+        mentionsOrdered.push(jid);
+      }
+    }
+
+    // Descargar citado si existe
+    const quoted = getQuotedMessage(msg);
+    const DL = await getDownloader(wa);
+    let messageToForward = null;
+    let hasMedia = false;
+
+    if (quoted) {
+      if (quoted.conversation != null) {
+        // Respeta EXACTAMENTE el texto original
+        messageToForward = { text: quoted.conversation };
+      } else if (quoted.extendedTextMessage?.text != null) {
+        messageToForward = { text: quoted.extendedTextMessage.text };
+      } else if (quoted.imageMessage && DL) {
+        const stream = await DL(quoted.imageMessage, "image");
+        let buffer = Buffer.alloc(0);
+        for await (const c of stream) buffer = Buffer.concat([buffer, c]);
+        messageToForward = {
+          image: buffer,
+          mimetype: quoted.imageMessage.mimetype || "image/jpeg",
+          // caption EXACTA, sin trims
+          caption: quoted.imageMessage.caption ?? ""
+        };
+        hasMedia = true;
+      } else if (quoted.videoMessage && DL) {
+        const stream = await DL(quoted.videoMessage, "video");
+        let buffer = Buffer.alloc(0);
+        for await (const c of stream) buffer = Buffer.concat([buffer, c]);
+        messageToForward = {
+          video: buffer,
+          mimetype: quoted.videoMessage.mimetype || "video/mp4",
+          caption: quoted.videoMessage.caption ?? "",
+          gifPlayback: !!quoted.videoMessage.gifPlayback
+        };
+        hasMedia = true;
+      } else if (quoted.audioMessage && DL) {
+        const stream = await DL(quoted.audioMessage, "audio");
+        let buffer = Buffer.alloc(0);
+        for await (const c of stream) buffer = Buffer.concat([buffer, c]);
+        messageToForward = {
+          audio: buffer,
+          mimetype: quoted.audioMessage.mimetype || "audio/mpeg",
+          ptt: !!quoted.audioMessage.ptt
+        };
+        hasMedia = true;
+      } else if (quoted.stickerMessage && DL) {
+        const stream = await DL(quoted.stickerMessage, "sticker");
+        let buffer = Buffer.alloc(0);
+        for await (const c of stream) buffer = Buffer.concat([buffer, c]);
+        messageToForward = { sticker: buffer };
+        hasMedia = true;
+      } else if (quoted.documentMessage && DL) {
+        const stream = await DL(quoted.documentMessage, "document");
+        let buffer = Buffer.alloc(0);
+        for await (const c of stream) buffer = Buffer.concat([buffer, c]);
+        messageToForward = {
+          document: buffer,
+          mimetype: quoted.documentMessage.mimetype || "application/octet-stream",
+          fileName: quoted.documentMessage.fileName || undefined,
+          caption: quoted.documentMessage.caption ?? ""
+        };
+        hasMedia = true;
+      }
+    }
+
+    // Si NO hay citado (o no era media) toma el texto EXACTO tras el comando (sin .join())
+    if (!messageToForward) {
+      const prefixes = Array.isArray(global.prefixes) ? global.prefixes : ["."];
+      const body = getBodyRaw(msg);
+      const rawText = extractAfterAlias(body, ["tag", "n", "notify"], prefixes);
+      if (rawText && rawText.length > 0) {
+        messageToForward = { text: rawText }; // sin trims: respeta saltos/espacios/origen
+      }
+    }
+
+    if (!messageToForward) {
+      return conn.sendMessage(chatId, {
+        text: "⚠️ Responde a un mensaje o escribe un texto tras el comando para reenviar."
+      }, { quoted: msg });
+    }
+
+    // Enviar preservando orden del texto y orden de menciones
+    await conn.sendMessage(
+      chatId,
+      { ...messageToForward, mentions: mentionsOrdered },
+      { quoted: msg }
     );
+
   } catch (err) {
-    return await conn.sendMessage(
-      m.chat,
-      { text: '🔊 Notificación', mentions: users },
-      { quoted: fkontak }
-    );
+    console.error("❌ Error en el comando tag:", err);
+    await conn.sendMessage(msg.key.remoteJid, { text: "❌ Ocurrió un error al ejecutar el comando." }, { quoted: msg });
   }
 };
 
-handler.command = ['tag', 'n', 'notify'];
-handler.group = true;
-handler.admin = true;
-
+handler.command = ["tag", "n", "notify"];
 module.exports = handler;
