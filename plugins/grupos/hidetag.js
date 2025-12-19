@@ -1,5 +1,5 @@
-import { generateWAMessageFromContent, downloadContentFromMessage } from '@whiskeysockets/baileys'
-import fetch from 'node-fetch'
+const { generateWAMessageFromContent, downloadContentFromMessage } from '@whiskeysockets/baileys'
+const fetch from 'node-fetch'
 
 let thumb = null
 fetch('https://cdn.russellxz.click/28a8569f.jpeg')
