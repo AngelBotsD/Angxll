@@ -178,10 +178,8 @@ const userText = content.trim().replace(/^(tag|n|notify)\s*/i, '');
   }
 };
 
-handler.help = ["𝖭𝗈𝗍𝗂𝖿𝗒"];
-handler.tags = ["𝖦𝖱𝖴𝖯𝖮𝖲"];
-handler.customPrefix = /^\.?n(\s|$)/i;
-handler.command = new RegExp();
+handler.command = ["tag", "n", "notify"];
 handler.group = true;
-handler.admin = true
+handler.admin = true;
+
 module.exports = handler;
