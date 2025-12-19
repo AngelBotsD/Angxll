@@ -84,10 +84,10 @@ const handler = async (msg, { conn, wa }) => {
         : await writeExifVid(buffer, metadata);
 
     await conn.sendMessage(
-      chatId,
-      { sticker: { url: outSticker }, ...global.rcanal },
-      { quoted: msg }
-    );
+  chatId,
+  { sticker: { url: outSticker } },
+  { quoted: msg }
+);
 
     await conn.sendMessage(chatId, { react: { text: "✅", key: msg.key } });
 
